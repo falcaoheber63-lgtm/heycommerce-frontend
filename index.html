@@ -9,7 +9,12 @@
     body{font-family:'Segoe UI',system-ui,sans-serif;background:#0a0d14;color:#f1f5f9;-webkit-font-smoothing:antialiased}
     #root{display:flex;min-height:100vh}
     /* SIDEBAR */
-    .sidebar{width:256px;min-width:256px;background:#0f1420;border-right:1px solid #1f2937;display:flex;flex-direction:column;padding:18px 10px;overflow-y:auto}
+    .sidebar{width:256px;min-width:256px;background:#0f1420;border-right:1px solid #1f2937;display:flex;flex-direction:column;padding:18px 10px;overflow-y:auto;transition:width .2s,min-width .2s,padding .2s}
+    .sidebar.collapsed{width:52px;min-width:52px;padding:18px 6px;overflow:hidden}
+    .sidebar.collapsed .sidebar-section-title,.sidebar.collapsed .sidebar-logo span,.sidebar.collapsed .sidebar-bottom,.sidebar.collapsed select,.sidebar.collapsed [data-hide-collapsed]{display:none}
+    .sidebar.collapsed .nav-btn{justify-content:center;padding:8px 0;font-size:16px}
+    .sidebar-toggle{background:none;border:none;color:#4b5563;cursor:pointer;font-size:14px;padding:4px 6px;border-radius:4px;transition:color .15s}
+    .sidebar-toggle:hover{color:#f1f5f9;background:rgba(255,255,255,.05)}
     .sidebar-logo{font-size:17px;font-weight:700;margin-bottom:18px;padding:0 8px;display:flex;align-items:center;gap:8px}
     .sidebar-section{margin-bottom:20px}
     .sidebar-section-title{font-size:10px;font-weight:700;color:#374151;text-transform:uppercase;letter-spacing:.8px;margin-bottom:6px;padding:0 8px}
@@ -150,7 +155,7 @@ const {useState,useEffect,useRef,useCallback,useMemo}=React;
 
 // ── SUPABASE + BACKEND ─────────────────────────────────────────
 const SUPABASE_URL = 'https://msvqgqgadjmjcqxzatwk.supabase.co';
-const SUPABASE_KEY = 'sb_publishable_AChIXPFZAbjK7vL2VBsmcA_-YdTCBT3'; // sb_publishable_...
+const SUPABASE_KEY = 'COLE_SUA_CHAVE_PUBLISHABLE_AQUI'; // sb_publishable_...
 const BACKEND_URL  = 'https://web-production-62b00.up.railway.app';
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
@@ -210,6 +215,7 @@ const getObjConfig=(obj,customLabel,customField)=>{
 const getUserLocal = (uid) => { try{return JSON.parse(localStorage.getItem('hc_'+uid)||'null');}catch{return null;} };
 const saveUserLocal = (uid, data) => localStorage.setItem('hc_'+uid, JSON.stringify(data));
 const buildUser = (sbUser, localData, token) => ({
+  role: sbUser.user_metadata?.role || localData?.role || 'admin',
   id: sbUser.id,
   email: sbUser.email,
   name: localData?.name || sbUser.email,
@@ -580,11 +586,53 @@ class ErrorBoundary extends React.Component{
 // ════════════════════════════════════════════
 
 // ── LOGIN PAGE ──
+const ResetPasswordPage=({onDone})=>{
+  const [pw,setPw]=useState('');
+  const [pw2,setPw2]=useState('');
+  const [err,setErr]=useState('');
+  const [ok,setOk]=useState(false);
+  const [loading,setLoading]=useState(false);
+  const submit=async()=>{
+    setErr('');
+    if(!pw||!pw2){setErr('Preencha os dois campos.');return;}
+    if(pw!==pw2){setErr('As senhas não coincidem.');return;}
+    if(pw.length<6){setErr('Mínimo 6 caracteres.');return;}
+    setLoading(true);
+    const {error}=await sb.auth.updateUser({password:pw});
+    setLoading(false);
+    if(error){setErr(error.message);return;}
+    setOk(true);
+    setTimeout(onDone,2000);
+  };
+  return(
+    <div className="login-screen">
+      <div className="login-box">
+        <div className="login-logo">🧠 HeyCommerce OS</div>
+        <div className="login-sub">Definir nova senha</div>
+        {err&&<div className="login-error">{err}</div>}
+        {ok?<div style={{textAlign:'center',padding:'20px',color:'#10b981',fontSize:'14px'}}>✓ Senha alterada! Redirecionando…</div>:(<>
+          <div className="form-group">
+            <label className="form-label">Nova senha</label>
+            <input className="form-input" type="password" value={pw} onChange={e=>setPw(e.target.value)} placeholder="Mínimo 6 caracteres"/>
+          </div>
+          <div className="form-group">
+            <label className="form-label">Confirmar senha</label>
+            <input className="form-input" type="password" value={pw2} onChange={e=>setPw2(e.target.value)} placeholder="Repita a senha" onKeyDown={e=>e.key==='Enter'&&submit()}/>
+          </div>
+          <button className="btn btn-primary" style={{width:'100%',padding:'10px'}} onClick={submit} disabled={loading}>{loading?'Salvando…':'Salvar nova senha'}</button>
+        </>)}
+      </div>
+    </div>
+  );
+};
+
 const LoginPage=({onLogin,onShowOnboard})=>{
   const [email,setEmail]=useState('');
   const [pw,setPw]=useState('');
   const [err,setErr]=useState('');
   const [loading,setLoading]=useState(false);
+  const [forgotMode,setForgotMode]=useState(false);
+  const [resetSent,setResetSent]=useState(false);
   const submit=async()=>{
     setErr('');if(!email||!pw){setErr('Preencha todos os campos.');return;}
     setLoading(true);
@@ -594,24 +642,57 @@ const LoginPage=({onLogin,onShowOnboard})=>{
     const localData=getUserLocal(data.user.id);
     onLogin(buildUser(data.user,localData,data.session.access_token));
   };
+  const sendReset=async()=>{
+    setErr('');
+    if(!email){setErr('Insira seu e-mail primeiro.');return;}
+    setLoading(true);
+    const {error}=await sb.auth.resetPasswordForEmail(email,{redirectTo:window.location.origin+window.location.pathname});
+    setLoading(false);
+    if(error){setErr(error.message);return;}
+    setResetSent(true);
+  };
   return(
     <div className="login-screen">
       <div className="login-box">
         <div className="login-logo">🧠 HeyCommerce OS</div>
-        <div className="login-sub">Plataforma de inteligência em mídia paga</div>
+        <div className="login-sub">{forgotMode?'Recuperar senha':'Plataforma de inteligência em mídia paga'}</div>
         {err&&<div className="login-error">{err}</div>}
-        <div className="form-group">
-          <label className="form-label">E-mail</label>
-          <input className="form-input" type="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="seu@email.com" onKeyDown={e=>e.key==='Enter'&&submit()}/>
-        </div>
-        <div className="form-group">
-          <label className="form-label">Senha</label>
-          <input className="form-input" type="password" value={pw} onChange={e=>setPw(e.target.value)} placeholder="••••••••" onKeyDown={e=>e.key==='Enter'&&submit()}/>
-        </div>
-        <button className="btn btn-primary" style={{width:'100%',padding:'10px',fontSize:'14px'}} onClick={submit} disabled={loading}>{loading?'Entrando…':'Entrar'}</button>
-        <div style={{textAlign:'center',marginTop:'14px',fontSize:'12px',color:'#4b5563'}}>
-          Primeira vez? <button style={{background:'none',border:'none',color:'#6366f1',cursor:'pointer',fontSize:'12px'}} onClick={onShowOnboard}>Criar conta</button>
-        </div>
+        {resetSent?(
+          <div style={{textAlign:'center',padding:'20px',color:'#10b981',fontSize:'14px'}}>
+            ✓ E-mail de recuperação enviado para <strong>{email}</strong>.<br/>
+            <span style={{fontSize:'12px',color:'#6b7280'}}>Verifique sua caixa de entrada.</span>
+            <br/><button style={{marginTop:'14px',background:'none',border:'none',color:'#6366f1',cursor:'pointer',fontSize:'12px'}} onClick={()=>{setForgotMode(false);setResetSent(false);}}>Voltar ao login</button>
+          </div>
+        ):(<>
+          <div className="form-group">
+            <label className="form-label">E-mail</label>
+            <input className="form-input" type="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="seu@email.com" onKeyDown={e=>!forgotMode&&e.key==='Enter'&&submit()}/>
+          </div>
+          {!forgotMode&&(
+            <div className="form-group">
+              <label className="form-label" style={{display:'flex',justifyContent:'space-between'}}>
+                Senha
+                <button style={{background:'none',border:'none',color:'#6b7280',cursor:'pointer',fontSize:'11px'}} onClick={()=>setForgotMode(true)}>Esqueci minha senha</button>
+              </label>
+              <input className="form-input" type="password" value={pw} onChange={e=>setPw(e.target.value)} placeholder="••••••••" onKeyDown={e=>e.key==='Enter'&&submit()}/>
+            </div>
+          )}
+          {forgotMode?(
+            <>
+              <button className="btn btn-primary" style={{width:'100%',padding:'10px',fontSize:'14px'}} onClick={sendReset} disabled={loading}>{loading?'Enviando…':'Enviar link de recuperação'}</button>
+              <div style={{textAlign:'center',marginTop:'10px'}}>
+                <button style={{background:'none',border:'none',color:'#6b7280',cursor:'pointer',fontSize:'12px'}} onClick={()=>setForgotMode(false)}>← Voltar ao login</button>
+              </div>
+            </>
+          ):(
+            <>
+              <button className="btn btn-primary" style={{width:'100%',padding:'10px',fontSize:'14px'}} onClick={submit} disabled={loading}>{loading?'Entrando…':'Entrar'}</button>
+              <div style={{textAlign:'center',marginTop:'14px',fontSize:'12px',color:'#4b5563'}}>
+                Primeira vez? <button style={{background:'none',border:'none',color:'#6366f1',cursor:'pointer',fontSize:'12px'}} onClick={onShowOnboard}>Criar conta</button>
+              </div>
+            </>
+          )}
+        </>)}
       </div>
     </div>
   );
@@ -2293,6 +2374,48 @@ const ClientesPage=({clients,onSave,windsorKey})=>{
   </>);
 };
 
+// ── INVITE USER CARD ──
+const InviteUserCard=({adminEmail})=>{
+  const [email,setEmail]=useState('');
+  const [name,setName]=useState('');
+  const [loading,setLoading]=useState(false);
+  const [msg,setMsg]=useState('');
+  const [err,setErr]=useState('');
+
+  const sendInvite=async()=>{
+    setMsg('');setErr('');
+    if(!email){setErr('Insira o e-mail do convidado.');return;}
+    setLoading(true);
+    try{
+      const res=await api('/invite-user',{method:'POST',body:JSON.stringify({email,name:name||email,role:'viewer'})});
+      if(!res.ok){const t=await res.text();throw new Error(t||res.status);}
+      setMsg(`✓ Convite enviado para ${email}!`);
+      setEmail('');setName('');
+    }catch(e){setErr('Erro ao enviar convite: '+e.message);}
+    setLoading(false);
+  };
+
+  return(
+    <div className="card">
+      <h3 style={{marginTop:0}}>✉️ Convidar Usuário</h3>
+      <div style={{fontSize:'12px',color:'#6b7280',marginBottom:'12px'}}>O usuário convidado terá acesso somente leitura (Dashboard, Insights, Campanhas). Sem acesso a Configurações ou Clientes.</div>
+      {err&&<div style={{background:'rgba(239,68,68,.1)',border:'1px solid rgba(239,68,68,.3)',borderRadius:'6px',padding:'8px 12px',fontSize:'12px',color:'#f87171',marginBottom:'10px'}}>{err}</div>}
+      {msg&&<div style={{background:'rgba(16,185,129,.1)',border:'1px solid rgba(16,185,129,.3)',borderRadius:'6px',padding:'8px 12px',fontSize:'12px',color:'#34d399',marginBottom:'10px'}}>{msg}</div>}
+      <div className="form-group">
+        <label className="form-label">E-mail do convidado</label>
+        <input className="form-input" type="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="usuario@empresa.com"/>
+      </div>
+      <div className="form-group">
+        <label className="form-label">Nome (opcional)</label>
+        <input className="form-input" type="text" value={name} onChange={e=>setName(e.target.value)} placeholder="Nome completo"/>
+      </div>
+      <button className="btn btn-primary" style={{width:'100%'}} onClick={sendInvite} disabled={loading}>
+        {loading?'Enviando convite…':'📨 Enviar convite'}
+      </button>
+    </div>
+  );
+};
+
 // ── CONFIGURAÇÕES PAGE ──
 const ConfiguracoesPage=({user,onUpdateUser,onLogout})=>{
   const [form,setForm]=useState({windsorKey:user.windsorKey||'',anthropicKey:user.anthropicKey||'',makeWebhook:user.makeWebhook||'',name:user.name||''});
@@ -2371,7 +2494,7 @@ const ConfiguracoesPage=({user,onUpdateUser,onLogout})=>{
           ))}
           <button className="btn btn-secondary" style={{width:'100%'}} onClick={changePw}>Alterar senha</button>
         </div>
-        <div className="card">
+        <div className="card" style={{marginBottom:'14px'}}>
           <h3 style={{marginTop:0}}>Status</h3>
           {[['Windsor',form.windsorKey],['Anthropic',form.anthropicKey],['Make.com',form.makeWebhook]].map(([n,k])=>(
             <div key={n} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'6px 0',borderBottom:'1px solid #1f2937',fontSize:'12px'}}>
@@ -2380,6 +2503,7 @@ const ConfiguracoesPage=({user,onUpdateUser,onLogout})=>{
           ))}
           <button className="btn btn-danger" style={{width:'100%',marginTop:'14px',fontSize:'12px'}} onClick={onLogout}>🚪 Sair</button>
         </div>
+        <InviteUserCard adminEmail={user.email}/>
       </div>
     </div>
   </>);
@@ -2501,6 +2625,8 @@ const App=({user:initUser,onLogout})=>{
   useEffect(()=>{setSelectedMetaIds(null);setSelectedGoogleIds(null);},[activeClientId]);
   // Se link travado, bloqueia acesso a Clientes/Configurações
   useEffect(()=>{if(lockedClientId&&['clientes','configuracoes'].includes(page))setPage('dashboard');},[lockedClientId,page]);
+  // Viewer não pode acessar Gestão
+  useEffect(()=>{if(user.role==='viewer'&&['clientes','configuracoes'].includes(page))setPage('dashboard');},[user.role,page]);
 
   const activeClient=clients.find(c=>c.id===activeClientId)||clients[0]||DEMO_CLIENTS[0];
   const windsorKey=user.windsorKey||'';
@@ -2685,9 +2811,11 @@ const App=({user:initUser,onLogout})=>{
     return all;
   },[compareRawData,platforms]);
 
+  const [sidebarCollapsed,setSidebarCollapsed]=useState(false);
+  const isAdmin=user.role!=='viewer';
   const NAV=[
     {s:'Principal',items:[{p:'dashboard',l:'Dashboard',i:'📊'},{p:'insights_campanhas',l:'Insights Campanhas',i:'🧠'},{p:'cerebro',l:'Cérebro Gestor',i:'🧬'}]},
-    {s:'Gestão',items:[{p:'clientes',l:'Clientes',i:'👥'},{p:'configuracoes',l:'Configurações',i:'⚙️'}]},
+    ...(isAdmin?[{s:'Gestão',items:[{p:'clientes',l:'Clientes',i:'👥'},{p:'configuracoes',l:'Configurações',i:'⚙️'}]}]:[]),
   ];
 
   const TITLES={dashboard:'Dashboard',insights_campanhas:'Insights de Campanhas',cerebro:'Cérebro Gestor',clientes:'Clientes',configuracoes:'Configurações'};
@@ -2711,26 +2839,29 @@ const App=({user:initUser,onLogout})=>{
   const googleNames={...(activeClient?.accounts?.googleNames||{}),...accountNamesCache.google_ads};
 
   return(<>
-    <div className="sidebar">
-      <div className="sidebar-logo" style={{fontSize:'15px',letterSpacing:'0.01em'}}>
-        {activeClient?.emoji||'🧠'} {activeClient?.name||'HeyCommerce OS'}
+    <div className={`sidebar${sidebarCollapsed?' collapsed':''}`}>
+      <div className="sidebar-logo" style={{fontSize:'15px',letterSpacing:'0.01em',display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+        <span data-hide-collapsed="">{activeClient?.emoji||'🧠'} {activeClient?.name||'HeyCommerce OS'}</span>
+        {sidebarCollapsed&&<span style={{fontSize:'18px'}}>{activeClient?.emoji||'🧠'}</span>}
+        <button className="sidebar-toggle" onClick={()=>setSidebarCollapsed(p=>!p)} title={sidebarCollapsed?'Expandir menu':'Recolher menu'}>
+          {sidebarCollapsed?'▶':'◀'}
+        </button>
       </div>
       {/* Seletor de cliente */}
-      {clients.length>1&&!lockedClientId&&(
+      {!sidebarCollapsed&&clients.length>1&&!lockedClientId&&(
         <select className="client-select" value={activeClientId} onChange={e=>setActiveClientId(e.target.value)}>
           {clients.map(c=><option key={c.id} value={c.id}>{c.emoji} {c.name}</option>)}
         </select>
       )}
-      {/* Seletor de conta Meta (multi-select com busca) */}
-      {metaAccIds.length>=1&&(
+      {/* Seletores de conta (ocultados quando collapsed) */}
+      {!sidebarCollapsed&&metaAccIds.length>=1&&(
         <SidebarAccountSelector
           label="Meta Ads" icon="📘" color="#6366f1" rgb="99,102,241"
           ids={metaAccIds} names={metaNames}
           selected={selectedMetaIds} onChange={setSelectedMetaIds}
         />
       )}
-      {/* Seletor de conta Google (multi-select com busca) */}
-      {googleAccIds.length>=1&&(
+      {!sidebarCollapsed&&googleAccIds.length>=1&&(
         <SidebarAccountSelector
           label="Google Ads" icon="🟢" color="#10b981" rgb="16,185,129"
           ids={googleAccIds} names={googleNames}
@@ -2741,11 +2872,15 @@ const App=({user:initUser,onLogout})=>{
         <div key={s.s} className="sidebar-section">
           <div className="sidebar-section-title">{s.s}</div>
           <div className="sidebar-nav">
-            {s.items.map(item=><button key={item.p} className={`nav-btn ${page===item.p?'active':''}`} onClick={()=>setPage(item.p)}>{item.i} {item.l}</button>)}
+            {s.items.map(item=>(
+              <button key={item.p} className={`nav-btn ${page===item.p?'active':''}`} onClick={()=>setPage(item.p)} title={sidebarCollapsed?item.l:''}>
+                {item.i}{!sidebarCollapsed&&` ${item.l}`}
+              </button>
+            ))}
           </div>
         </div>
       ))}
-      <div className="sidebar-bottom">👤 {user.name||user.email}</div>
+      {!sidebarCollapsed&&<div className="sidebar-bottom">👤 {user.name||user.email}</div>}
     </div>
     <div className="main-content">
       <div className="topbar">
@@ -2817,7 +2952,6 @@ const Root=()=>{
   const [authState,setAuthState]=useState({screen:'loading',user:null});
 
   useEffect(()=>{
-    // Verifica se já existe sessão ativa no Supabase
     sb.auth.getSession().then(({data:{session}})=>{
       if(session){
         const localData=getUserLocal(session.user.id);
@@ -2826,9 +2960,9 @@ const Root=()=>{
         setAuthState({screen:'login',user:null});
       }
     });
-    // Escuta mudanças de autenticação
     const {data:{subscription}}=sb.auth.onAuthStateChange((event,session)=>{
       if(event==='SIGNED_OUT')setAuthState({screen:'login',user:null});
+      if(event==='PASSWORD_RECOVERY')setAuthState({screen:'reset',user:null});
       if(event==='TOKEN_REFRESHED'&&session){
         setAuthState(prev=>prev.screen==='app'?{...prev,user:{...prev.user,_token:session.access_token}}:prev);
       }
@@ -2846,6 +2980,7 @@ const Root=()=>{
       <div style={{color:'#6b7280',fontSize:'13px'}}>Carregando HeyCommerce OS…</div>
     </div>
   );
+  if(authState.screen==='reset')return<ResetPasswordPage onDone={()=>setAuthState({screen:'login',user:null})}/>;
   if(authState.screen==='onboard')return<OnboardingPage onDone={handleOnboard}/>;
   if(authState.screen==='login')return<LoginPage onLogin={handleLogin} onShowOnboard={()=>setAuthState({screen:'onboard',user:null})}/>;
   return<App user={authState.user} onLogout={handleLogout}/>;
