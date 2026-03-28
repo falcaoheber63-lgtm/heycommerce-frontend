@@ -2399,7 +2399,8 @@ const InviteUserCard=({adminEmail})=>{
         email,
         options:{
           shouldCreateUser:true,
-          data:{name:name||email,role:'viewer'}
+          data:{name:name||email,role:'viewer'},
+          emailRedirectTo: window.location.origin + window.location.pathname
         }
       });
       if(error)throw new Error(error.message);
