@@ -658,7 +658,7 @@ const OnboardingPage=({onDone})=>{
       if(form.pw!==form.pw2)return setErr('As senhas não coincidem.');
       if(form.pw.length<6)return setErr('A senha deve ter pelo menos 6 caracteres.');
     }
-    if(step<3){setStep(s=>s+1);}else{await finish();}
+    if(step<2){setStep(s=>s+1);}else{await finish();}
   };
 
   const finish=async()=>{
@@ -676,7 +676,7 @@ const OnboardingPage=({onDone})=>{
     onDone(buildUser(data.user,localData,data.session?.access_token));
   };
 
-  const steps=['Conta','Windsor','Clientes','Pronto'];
+  const steps=['Conta','Clientes','Pronto'];
   return(
     <div className="login-screen">
       <div className="login-box" style={{maxWidth:'460px'}}>
@@ -706,32 +706,6 @@ const OnboardingPage=({onDone})=>{
 
         {step===1&&(
           <div>
-            <div className="onboard-step-title">Conectar APIs</div>
-            <div className="onboard-step-sub">Configure suas integrações. Você pode pular e configurar depois em Configurações.</div>
-            <div className="form-group">
-              <label className="form-label">Chave API Windsor.ai</label>
-              <div style={{display:'flex',gap:'8px'}}>
-                <input className="form-input" type="password" value={form.windsorKey} onChange={e=>f('windsorKey',e.target.value)} placeholder="Sua chave Windsor"/>
-                <button className="btn btn-secondary btn-sm" onClick={discoverWindsor} disabled={discovering} style={{whiteSpace:'nowrap'}}>{discovering?'⏳':'🔍 Testar'}</button>
-              </div>
-              <div className="form-hint">Obtenha em windsor.ai → Configurações → API Key</div>
-              {discovered.length>0&&<div style={{marginTop:'8px',padding:'8px',background:'rgba(16,185,129,.08)',borderRadius:'6px',fontSize:'12px',color:'#10b981'}}>✓ {discovered.length} conta(s) encontrada(s): {discovered.map(a=>a.name||a.id).join(', ')}</div>}
-            </div>
-            <div className="form-group">
-              <label className="form-label">Chave API Anthropic (Claude)</label>
-              <input className="form-input" type="password" value={form.anthropicKey} onChange={e=>f('anthropicKey',e.target.value)} placeholder="sk-ant-..."/>
-              <div className="form-hint">Obtenha em console.anthropic.com → API Keys</div>
-            </div>
-            <div className="form-group">
-              <label className="form-label">URL Webhook Make.com</label>
-              <input className="form-input" type="text" value={form.makeWebhook} onChange={e=>f('makeWebhook',e.target.value)} placeholder="https://hook.us2.make.com/..."/>
-              <div className="form-hint">Deixe em branco para usar o webhook padrão</div>
-            </div>
-          </div>
-        )}
-
-        {step===2&&(
-          <div>
             <div className="onboard-step-title">Adicionar primeiro cliente</div>
             <div className="onboard-step-sub">Configure os IDs das contas de anúncio.</div>
             <div className="form-group">
@@ -740,11 +714,8 @@ const OnboardingPage=({onDone})=>{
             </div>
             <div className="form-group">
               <label className="form-label">📘 IDs Meta Ads (separar por vírgula)</label>
-              <div style={{display:'flex',gap:'8px'}}>
-                <input className="form-input" type="text" value={form.facebookId} onChange={e=>f('facebookId',e.target.value)} placeholder="1234567890, 0987654321"/>
-                {form.windsorKey&&<button className="btn btn-secondary btn-sm" onClick={discoverWindsor} disabled={discovering} style={{whiteSpace:'nowrap'}}>{discovering?'⏳':'🔍 Auto'}</button>}
-              </div>
-              {discovered.length>0&&<div style={{marginTop:'4px',fontSize:'11px',color:'#10b981'}}>Encontrados: {discovered.map(a=>a.id).join(', ')}</div>}
+              <input className="form-input" type="text" value={form.facebookId} onChange={e=>f('facebookId',e.target.value)} placeholder="1234567890, 0987654321"/>
+              <div className="form-hint">Você pode deixar em branco e configurar depois em Clientes</div>
             </div>
             <div className="form-group">
               <label className="form-label">🟢 IDs Google Ads (separar por vírgula)</label>
@@ -753,7 +724,7 @@ const OnboardingPage=({onDone})=>{
           </div>
         )}
 
-        {step===3&&(
+        {step===2&&(
           <div style={{textAlign:'center',padding:'20px 0'}}>
             <div style={{fontSize:'48px',marginBottom:'12px'}}>🎉</div>
             <div className="onboard-step-title" style={{textAlign:'center'}}>Tudo pronto!</div>
@@ -762,12 +733,12 @@ const OnboardingPage=({onDone})=>{
         )}
 
         <div style={{display:'flex',gap:'8px',marginTop:'20px'}}>
-          {step>0&&step<3&&<button className="btn btn-secondary" style={{flex:1}} onClick={()=>setStep(s=>s-1)}>Voltar</button>}
+          {step>0&&step<2&&<button className="btn btn-secondary" style={{flex:1}} onClick={()=>setStep(s=>s-1)}>Voltar</button>}
           <button className="btn btn-primary" style={{flex:1,padding:'10px'}} onClick={next} disabled={registering}>
-            {registering?'Criando conta…':step===3?'🚀 Entrar':step===2?'Finalizar':'Próximo →'}
+            {registering?'Criando conta…':step===2?'🚀 Entrar':step===1?'Finalizar':'Próximo →'}
           </button>
         </div>
-        {step<3&&<div style={{textAlign:'center',marginTop:'10px'}}><button style={{background:'none',border:'none',color:'#4b5563',cursor:'pointer',fontSize:'11px'}} onClick={()=>step<2?setStep(s=>s+1):finish()}>Pular este passo</button></div>}
+        {step===1&&<div style={{textAlign:'center',marginTop:'10px'}}><button style={{background:'none',border:'none',color:'#4b5563',cursor:'pointer',fontSize:'11px'}} onClick={finish}>Pular este passo</button></div>}
       </div>
     </div>
   );
