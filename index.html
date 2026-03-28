@@ -141,10 +141,16 @@
 <script type="text/babel">
 // ── MIGRATION ──
 (function(){
-  const V='5';
+  const V='6';
   if(localStorage.getItem('admind_v')!==V){
     const keep={};
+    // Preserva dados do app
     ['admind_users','admind_session'].forEach(k=>{const v=localStorage.getItem(k);if(v)keep[k]=v;});
+    // Preserva sessão do Supabase (chaves começam com 'sb-') para não deslogar ao atualizar
+    for(let i=0;i<localStorage.length;i++){
+      const k=localStorage.key(i);
+      if(k&&(k.startsWith('sb-')||k.startsWith('hc_')))keep[k]=localStorage.getItem(k);
+    }
     localStorage.clear();
     Object.entries(keep).forEach(([k,v])=>localStorage.setItem(k,v));
     localStorage.setItem('admind_v',V);
@@ -2387,8 +2393,17 @@ const InviteUserCard=({adminEmail})=>{
     if(!email){setErr('Insira o e-mail do convidado.');return;}
     setLoading(true);
     try{
-      await api('POST','/invite-user',{email,name:name||email,role:'viewer'});
-      setMsg(`✓ Convite enviado para ${email}!`);
+      // Envia magic link via Supabase (não precisa do backend)
+      // O usuário recebe e-mail e ao clicar entra com role viewer
+      const {error}=await sb.auth.signInWithOtp({
+        email,
+        options:{
+          shouldCreateUser:true,
+          data:{name:name||email,role:'viewer'}
+        }
+      });
+      if(error)throw new Error(error.message);
+      setMsg(`✓ Convite enviado para ${email}! O usuário receberá um e-mail com o link de acesso.`);
       setEmail('');setName('');
     }catch(e){setErr('Erro ao enviar convite: '+e.message);}
     setLoading(false);
