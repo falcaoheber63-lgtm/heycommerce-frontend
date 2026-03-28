@@ -2409,7 +2409,7 @@ const ClientesPage=({clients,onSave,windsorKey})=>{
 };
 
 // ── INVITE USER CARD ──
-const InviteUserCard=({user})=>{
+const InviteUserCard=({user,onInvited})=>{
   const [email,setEmail]=useState('');
   const [name,setName]=useState('');
   const [selClientId,setSelClientId]=useState(user.clients[0]?.id||'');
@@ -2453,8 +2453,10 @@ const InviteUserCard=({user})=>{
       // Salva na lista local do admin
       const invKey=`hc_${user.id}_invited`;
       const existing=JSON.parse(localStorage.getItem(invKey)||'[]');
-      const updated=[...existing.filter(u=>u.email!==email),{email,name:name||email,role:'viewer',allowedMetaAccounts:metaShare,allowedGoogleAccounts:googleShare,clientName:selClient?.name||'',invitedAt:new Date().toISOString()}];
+      const newInv={email,name:name||email,role:'viewer',allowedMetaAccounts:metaShare,allowedGoogleAccounts:googleShare,clientName:selClient?.name||'',invitedAt:new Date().toISOString()};
+      const updated=[...existing.filter(u=>u.email!==email),newInv];
       localStorage.setItem(invKey,JSON.stringify(updated));
+      if(onInvited)onInvited(newInv);
       setMsg(`✓ Convite enviado para ${email}! O link de acesso chegará no e-mail.`);
       setEmail('');setName('');setAllowedMeta([]);setAllowedGoogle([]);
     }catch(e){setErr('Erro ao enviar convite: '+e.message);}
@@ -2520,10 +2522,15 @@ const UsuariosPage=({user})=>{
   const [profiles,setProfiles]=useState([]);
   const [pending,setPending]=useState(()=>{try{return JSON.parse(localStorage.getItem(invKey)||'[]');}catch{return[];}});
   const [loadingProfiles,setLoadingProfiles]=useState(true);
+  const [dbError,setDbError]=useState('');
 
   useEffect(()=>{
+    // Garante que o perfil do admin atual está salvo
+    upsertProfile(user);
+    // Busca todos os perfis
     sb.from('profiles').select('*').order('created_at',{ascending:true}).then(({data,error})=>{
-      if(!error&&data)setProfiles(data);
+      if(error){setDbError(error.message);}
+      else if(data){setProfiles(data);}
       setLoadingProfiles(false);
     });
   },[]);
@@ -2535,7 +2542,7 @@ const UsuariosPage=({user})=>{
   };
 
   const resendInvite=async(inv)=>{
-    await sb.auth.signInWithOtp({
+    const {error}=await sb.auth.signInWithOtp({
       email:inv.email,
       options:{
         shouldCreateUser:true,
@@ -2543,35 +2550,39 @@ const UsuariosPage=({user})=>{
         emailRedirectTo:window.location.origin+window.location.pathname
       }
     });
-    alert(`Convite reenviado para ${inv.email}`);
+    if(error)alert('Erro: '+error.message);
+    else alert(`✓ Convite reenviado para ${inv.email}`);
   };
 
-  // Emails que já têm perfil ativo (já fizeram login)
-  const activeEmails=new Set(profiles.map(p=>p.email));
+  // Mescla perfis do Supabase com o usuário atual (caso query falhe)
+  const allProfiles=profiles.length>0?profiles:[{id:user.id,email:user.email,name:user.name,role:user.role,allowed_meta_accounts:[],allowed_google_accounts:[],last_login:new Date().toISOString()}];
+  const activeEmails=new Set(allProfiles.map(p=>p.email));
   const pendingOnly=pending.filter(p=>!activeEmails.has(p.email));
-
   const roleLabel=(role)=>role==='viewer'?{label:'👁 Viewer',cls:'badge-gray'}:{label:'⚙️ Admin',cls:'badge-green'};
 
   return(
     <div style={{maxWidth:720,margin:'0 auto',padding:'24px 16px'}}>
       <h2 style={{marginBottom:'20px',color:'#f9fafb'}}>👥 Usuários</h2>
 
+      {dbError&&<div style={{background:'rgba(239,68,68,.1)',border:'1px solid rgba(239,68,68,.3)',borderRadius:'6px',padding:'8px 12px',fontSize:'12px',color:'#f87171',marginBottom:'12px'}}>⚠️ Erro ao carregar perfis: {dbError}. Execute o SQL de correção no Supabase.</div>}
+
       {/* Membros ativos */}
       <div className="card" style={{marginBottom:'16px'}}>
-        <h3 style={{marginTop:0,fontSize:'13px',color:'#9ca3af',textTransform:'uppercase',letterSpacing:'0.05em'}}>✅ Ativos ({profiles.length})</h3>
+        <h3 style={{marginTop:0,fontSize:'13px',color:'#9ca3af',textTransform:'uppercase',letterSpacing:'0.05em'}}>
+          ✅ Ativos ({loadingProfiles?'…':allProfiles.length})
+        </h3>
         {loadingProfiles&&<div style={{color:'#6b7280',fontSize:'13px'}}>Carregando…</div>}
-        {!loadingProfiles&&profiles.length===0&&<div style={{color:'#6b7280',fontSize:'13px'}}>Nenhum usuário ativo ainda.</div>}
-        {profiles.map((p,i)=>{
+        {allProfiles.map((p,i)=>{
           const {label,cls}=roleLabel(p.role);
-          const lastLogin=p.last_login?new Date(p.last_login).toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit',year:'2-digit',hour:'2-digit',minute:'2-digit'}):'—';
+          const lastLogin=p.last_login?new Date(p.last_login).toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'—';
           return(
-            <div key={p.id} style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between',padding:'12px 0',borderBottom:i<profiles.length-1?'1px solid #1f2937':'none'}}>
+            <div key={p.id||i} style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between',padding:'12px 0',borderBottom:i<allProfiles.length-1?'1px solid #1f2937':'none'}}>
               <div>
                 <div style={{fontWeight:600,fontSize:'14px'}}>{p.name||p.email} {p.id===user.id&&<span style={{fontSize:'11px',color:'#6b7280'}}>(você)</span>}</div>
                 <div style={{fontSize:'12px',color:'#6b7280'}}>{p.email}</div>
                 {p.client_name&&<div style={{fontSize:'11px',color:'#d1d5db',marginTop:'3px'}}>📁 {p.client_name}</div>}
-                {p.allowed_meta_accounts?.length>0&&<div style={{fontSize:'11px',color:'#818cf8',marginTop:'2px'}}>📘 Meta: {p.allowed_meta_accounts.join(', ')}</div>}
-                {p.allowed_google_accounts?.length>0&&<div style={{fontSize:'11px',color:'#34d399',marginTop:'2px'}}>🟢 Google: {p.allowed_google_accounts.join(', ')}</div>}
+                {p.allowed_meta_accounts?.filter(Boolean).length>0&&<div style={{fontSize:'11px',color:'#818cf8',marginTop:'2px'}}>📘 Meta: {p.allowed_meta_accounts.join(', ')}</div>}
+                {p.allowed_google_accounts?.filter(Boolean).length>0&&<div style={{fontSize:'11px',color:'#34d399',marginTop:'2px'}}>🟢 Google: {p.allowed_google_accounts.join(', ')}</div>}
                 <div style={{fontSize:'11px',color:'#4b5563',marginTop:'3px'}}>Último acesso: {lastLogin}</div>
               </div>
               <span className={`badge ${cls}`}>{label}</span>
@@ -2582,7 +2593,7 @@ const UsuariosPage=({user})=>{
 
       {/* Convites pendentes */}
       {pendingOnly.length>0&&(
-        <div className="card">
+        <div className="card" style={{marginBottom:'16px'}}>
           <h3 style={{marginTop:0,fontSize:'13px',color:'#9ca3af',textTransform:'uppercase',letterSpacing:'0.05em'}}>⏳ Aguardando acesso ({pendingOnly.length})</h3>
           {pendingOnly.map((inv,i)=>(
             <div key={i} style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between',padding:'12px 0',borderBottom:i<pendingOnly.length-1?'1px solid #1f2937':'none'}}>
@@ -2602,6 +2613,13 @@ const UsuariosPage=({user})=>{
           ))}
         </div>
       )}
+
+      {/* Formulário de convite direto nesta página */}
+      <InviteUserCard user={user} onInvited={(inv)=>{
+        const updated=[...pending.filter(p=>p.email!==inv.email),inv];
+        setPending(updated);
+        localStorage.setItem(invKey,JSON.stringify(updated));
+      }}/>
     </div>
   );
 };
