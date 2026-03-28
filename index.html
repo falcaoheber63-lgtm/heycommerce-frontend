@@ -2387,8 +2387,7 @@ const InviteUserCard=({adminEmail})=>{
     if(!email){setErr('Insira o e-mail do convidado.');return;}
     setLoading(true);
     try{
-      const res=await api('/invite-user',{method:'POST',body:JSON.stringify({email,name:name||email,role:'viewer'})});
-      if(!res.ok){const t=await res.text();throw new Error(t||res.status);}
+      await api('POST','/invite-user',{email,name:name||email,role:'viewer'});
       setMsg(`✓ Convite enviado para ${email}!`);
       setEmail('');setName('');
     }catch(e){setErr('Erro ao enviar convite: '+e.message);}
