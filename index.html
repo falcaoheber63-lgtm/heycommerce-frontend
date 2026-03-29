@@ -2523,22 +2523,58 @@ const UsuariosPage=({user})=>{
   const [pending,setPending]=useState(()=>{try{return JSON.parse(localStorage.getItem(invKey)||'[]');}catch{return[];}});
   const [loadingProfiles,setLoadingProfiles]=useState(true);
   const [dbError,setDbError]=useState('');
+  const [editingId,setEditingId]=useState(null); // id do perfil sendo editado
+  const [editForm,setEditForm]=useState({});
+  const [editMsg,setEditMsg]=useState('');
+  const [editingPendingEmail,setEditingPendingEmail]=useState(null);
 
-  useEffect(()=>{
-    // Garante que o perfil do admin atual está salvo
+  // Todas as contas disponíveis do admin (para checkboxes de edição)
+  const adminMeta=user.clients.flatMap(c=>c.accounts?.facebook||[]);
+  const adminGoogle=user.clients.flatMap(c=>c.accounts?.google_ads||[]);
+
+  const loadProfiles=()=>{
     upsertProfile(user);
-    // Busca todos os perfis
     sb.from('profiles').select('*').order('created_at',{ascending:true}).then(({data,error})=>{
-      if(error){setDbError(error.message);}
-      else if(data){setProfiles(data);}
+      if(error)setDbError(error.message);
+      else if(data)setProfiles(data);
       setLoadingProfiles(false);
     });
-  },[]);
+  };
+  useEffect(()=>{loadProfiles();},[]);
 
-  const removePending=(email)=>{
-    const u=pending.filter(x=>x.email!==email);
-    setPending(u);
-    localStorage.setItem(invKey,JSON.stringify(u));
+  const startEdit=(p)=>{
+    setEditingId(p.id);
+    setEditingPendingEmail(null);
+    setEditForm({name:p.name||'',allowed_meta:p.allowed_meta_accounts||[],allowed_google:p.allowed_google_accounts||[]});
+    setEditMsg('');
+  };
+  const startEditPending=(inv)=>{
+    setEditingPendingEmail(inv.email);
+    setEditingId(null);
+    setEditForm({name:inv.name||'',allowed_meta:inv.allowedMetaAccounts||[],allowed_google:inv.allowedGoogleAccounts||[]});
+    setEditMsg('');
+  };
+  const togEditMeta=(id)=>setEditForm(f=>({...f,allowed_meta:f.allowed_meta.includes(id)?f.allowed_meta.filter(x=>x!==id):[...f.allowed_meta,id]}));
+  const togEditGoogle=(id)=>setEditForm(f=>({...f,allowed_google:f.allowed_google.includes(id)?f.allowed_google.filter(x=>x!==id):[...f.allowed_google,id]}));
+
+  const saveEdit=async()=>{
+    setEditMsg('salvando…');
+    if(editingId){
+      const {error}=await sb.from('profiles').update({
+        name:editForm.name,
+        allowed_meta_accounts:editForm.allowed_meta,
+        allowed_google_accounts:editForm.allowed_google
+      }).eq('id',editingId);
+      if(error){setEditMsg('Erro: '+error.message);return;}
+      setProfiles(ps=>ps.map(p=>p.id===editingId?{...p,name:editForm.name,allowed_meta_accounts:editForm.allowed_meta,allowed_google_accounts:editForm.allowed_google}:p));
+    }
+    if(editingPendingEmail){
+      const updated=pending.map(p=>p.email===editingPendingEmail?{...p,name:editForm.name,allowedMetaAccounts:editForm.allowed_meta,allowedGoogleAccounts:editForm.allowed_google}:p);
+      setPending(updated);
+      localStorage.setItem(invKey,JSON.stringify(updated));
+    }
+    setEditMsg('✓ Salvo!');
+    setTimeout(()=>{setEditingId(null);setEditingPendingEmail(null);setEditMsg('');},1000);
   };
 
   const resendInvite=async(inv)=>{
@@ -2554,38 +2590,88 @@ const UsuariosPage=({user})=>{
     else alert(`✓ Convite reenviado para ${inv.email}`);
   };
 
-  // Mescla perfis do Supabase com o usuário atual (caso query falhe)
+  const removePending=(email)=>{
+    const u=pending.filter(x=>x.email!==email);
+    setPending(u);
+    localStorage.setItem(invKey,JSON.stringify(u));
+  };
+
   const allProfiles=profiles.length>0?profiles:[{id:user.id,email:user.email,name:user.name,role:user.role,allowed_meta_accounts:[],allowed_google_accounts:[],last_login:new Date().toISOString()}];
   const activeEmails=new Set(allProfiles.map(p=>p.email));
   const pendingOnly=pending.filter(p=>!activeEmails.has(p.email));
-  const roleLabel=(role)=>role==='viewer'?{label:'👁 Viewer',cls:'badge-gray'}:{label:'⚙️ Admin',cls:'badge-green'};
+
+  const EditPanel=({onSave,onCancel})=>(
+    <div style={{background:'#0f1623',border:'1px solid #374151',borderRadius:'8px',padding:'14px',marginTop:'10px'}}>
+      <div className="form-group">
+        <label className="form-label">Nome</label>
+        <input className="form-input" value={editForm.name} onChange={e=>setEditForm(f=>({...f,name:e.target.value}))}/>
+      </div>
+      {adminMeta.length>0&&(
+        <div className="form-group">
+          <label className="form-label">📘 Contas Meta (vazio = todas)</label>
+          <div style={{display:'flex',flexWrap:'wrap',gap:'5px',marginTop:'5px'}}>
+            {adminMeta.map(id=>(
+              <label key={id} style={{display:'flex',alignItems:'center',gap:'4px',fontSize:'11px',cursor:'pointer',background:'rgba(99,102,241,0.1)',padding:'4px 8px',borderRadius:'5px',border:`1px solid ${editForm.allowed_meta?.includes(id)?'#6366f1':'rgba(99,102,241,0.3)'}`}}>
+                <input type="checkbox" checked={editForm.allowed_meta?.includes(id)||false} onChange={()=>togEditMeta(id)} style={{accentColor:'#6366f1'}}/>{id}
+              </label>
+            ))}
+          </div>
+        </div>
+      )}
+      {adminGoogle.length>0&&(
+        <div className="form-group">
+          <label className="form-label">🟢 Contas Google (vazio = todas)</label>
+          <div style={{display:'flex',flexWrap:'wrap',gap:'5px',marginTop:'5px'}}>
+            {adminGoogle.map(id=>(
+              <label key={id} style={{display:'flex',alignItems:'center',gap:'4px',fontSize:'11px',cursor:'pointer',background:'rgba(16,185,129,0.1)',padding:'4px 8px',borderRadius:'5px',border:`1px solid ${editForm.allowed_google?.includes(id)?'#10b981':'rgba(16,185,129,0.3)'}`}}>
+                <input type="checkbox" checked={editForm.allowed_google?.includes(id)||false} onChange={()=>togEditGoogle(id)} style={{accentColor:'#10b981'}}/>{id}
+              </label>
+            ))}
+          </div>
+        </div>
+      )}
+      <div style={{display:'flex',gap:'8px',alignItems:'center',marginTop:'4px'}}>
+        <button className="btn btn-primary" style={{fontSize:'12px',padding:'5px 14px'}} onClick={saveEdit}>💾 Salvar</button>
+        <button className="btn btn-secondary" style={{fontSize:'12px',padding:'5px 14px'}} onClick={onCancel}>Cancelar</button>
+        {editMsg&&<span style={{fontSize:'12px',color:editMsg.startsWith('✓')?'#34d399':'#f87171'}}>{editMsg}</span>}
+      </div>
+    </div>
+  );
 
   return(
     <div style={{maxWidth:720,margin:'0 auto',padding:'24px 16px'}}>
       <h2 style={{marginBottom:'20px',color:'#f9fafb'}}>👥 Usuários</h2>
 
-      {dbError&&<div style={{background:'rgba(239,68,68,.1)',border:'1px solid rgba(239,68,68,.3)',borderRadius:'6px',padding:'8px 12px',fontSize:'12px',color:'#f87171',marginBottom:'12px'}}>⚠️ Erro ao carregar perfis: {dbError}. Execute o SQL de correção no Supabase.</div>}
+      {dbError&&<div style={{background:'rgba(239,68,68,.1)',border:'1px solid rgba(239,68,68,.3)',borderRadius:'6px',padding:'8px 12px',fontSize:'12px',color:'#f87171',marginBottom:'12px'}}>⚠️ {dbError}</div>}
 
       {/* Membros ativos */}
       <div className="card" style={{marginBottom:'16px'}}>
         <h3 style={{marginTop:0,fontSize:'13px',color:'#9ca3af',textTransform:'uppercase',letterSpacing:'0.05em'}}>
-          ✅ Ativos ({loadingProfiles?'…':allProfiles.length})
+          Membros ({loadingProfiles?'…':allProfiles.length})
         </h3>
         {loadingProfiles&&<div style={{color:'#6b7280',fontSize:'13px'}}>Carregando…</div>}
         {allProfiles.map((p,i)=>{
-          const {label,cls}=roleLabel(p.role);
+          const isViewer=p.role==='viewer';
           const lastLogin=p.last_login?new Date(p.last_login).toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'—';
+          const isEditing=editingId===p.id;
           return(
-            <div key={p.id||i} style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between',padding:'12px 0',borderBottom:i<allProfiles.length-1?'1px solid #1f2937':'none'}}>
-              <div>
-                <div style={{fontWeight:600,fontSize:'14px'}}>{p.name||p.email} {p.id===user.id&&<span style={{fontSize:'11px',color:'#6b7280'}}>(você)</span>}</div>
-                <div style={{fontSize:'12px',color:'#6b7280'}}>{p.email}</div>
-                {p.client_name&&<div style={{fontSize:'11px',color:'#d1d5db',marginTop:'3px'}}>📁 {p.client_name}</div>}
-                {p.allowed_meta_accounts?.filter(Boolean).length>0&&<div style={{fontSize:'11px',color:'#818cf8',marginTop:'2px'}}>📘 Meta: {p.allowed_meta_accounts.join(', ')}</div>}
-                {p.allowed_google_accounts?.filter(Boolean).length>0&&<div style={{fontSize:'11px',color:'#34d399',marginTop:'2px'}}>🟢 Google: {p.allowed_google_accounts.join(', ')}</div>}
-                <div style={{fontSize:'11px',color:'#4b5563',marginTop:'3px'}}>Último acesso: {lastLogin}</div>
+            <div key={p.id||i} style={{padding:'12px 0',borderBottom:i<allProfiles.length-1?'1px solid #1f2937':'none'}}>
+              <div style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between'}}>
+                <div>
+                  <div style={{fontWeight:600,fontSize:'14px'}}>{p.name||p.email} {p.id===user.id&&<span style={{fontSize:'11px',color:'#6b7280'}}>(você)</span>}</div>
+                  <div style={{fontSize:'12px',color:'#6b7280'}}>{p.email}</div>
+                  {p.client_name&&<div style={{fontSize:'11px',color:'#d1d5db',marginTop:'3px'}}>📁 {p.client_name}</div>}
+                  {p.allowed_meta_accounts?.filter(Boolean).length>0&&<div style={{fontSize:'11px',color:'#818cf8',marginTop:'2px'}}>📘 Meta: {p.allowed_meta_accounts.join(', ')}</div>}
+                  {p.allowed_google_accounts?.filter(Boolean).length>0&&<div style={{fontSize:'11px',color:'#34d399',marginTop:'2px'}}>🟢 Google: {p.allowed_google_accounts.join(', ')}</div>}
+                  <div style={{fontSize:'11px',color:'#4b5563',marginTop:'3px'}}>Último acesso: {lastLogin}</div>
+                </div>
+                <div style={{display:'flex',flexDirection:'column',alignItems:'flex-end',gap:'5px',minWidth:'90px'}}>
+                  <span className={`badge ${isViewer?'badge-gray':'badge-green'}`}>{isViewer?'👁 Acesso Básico':'⚙️ Admin'}</span>
+                  <span style={{fontSize:'10px',color:'#34d399',fontWeight:600}}>● Ativo</span>
+                  {p.id!==user.id&&<button className="btn btn-secondary" style={{fontSize:'11px',padding:'3px 8px'}} onClick={()=>isEditing?setEditingId(null):startEdit(p)}>{isEditing?'✕ Fechar':'✏️ Editar'}</button>}
+                </div>
               </div>
-              <span className={`badge ${cls}`}>{label}</span>
+              {isEditing&&<EditPanel onCancel={()=>setEditingId(null)}/>}
             </div>
           );
         })}
@@ -2594,27 +2680,34 @@ const UsuariosPage=({user})=>{
       {/* Convites pendentes */}
       {pendingOnly.length>0&&(
         <div className="card" style={{marginBottom:'16px'}}>
-          <h3 style={{marginTop:0,fontSize:'13px',color:'#9ca3af',textTransform:'uppercase',letterSpacing:'0.05em'}}>⏳ Aguardando acesso ({pendingOnly.length})</h3>
-          {pendingOnly.map((inv,i)=>(
-            <div key={i} style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between',padding:'12px 0',borderBottom:i<pendingOnly.length-1?'1px solid #1f2937':'none'}}>
-              <div>
-                <div style={{fontWeight:600,fontSize:'14px'}}>{inv.name||inv.email}</div>
-                <div style={{fontSize:'12px',color:'#6b7280'}}>{inv.email}</div>
-                {inv.clientName&&<div style={{fontSize:'11px',color:'#d1d5db',marginTop:'3px'}}>📁 {inv.clientName}</div>}
-                {inv.allowedMetaAccounts?.length>0&&<div style={{fontSize:'11px',color:'#818cf8',marginTop:'2px'}}>📘 Meta: {inv.allowedMetaAccounts.join(', ')}</div>}
-                {inv.allowedGoogleAccounts?.length>0&&<div style={{fontSize:'11px',color:'#34d399',marginTop:'2px'}}>🟢 Google: {inv.allowedGoogleAccounts.join(', ')}</div>}
+          <h3 style={{marginTop:0,fontSize:'13px',color:'#9ca3af',textTransform:'uppercase',letterSpacing:'0.05em'}}>Convidados ({pendingOnly.length})</h3>
+          {pendingOnly.map((inv,i)=>{
+            const isEditingP=editingPendingEmail===inv.email;
+            return(
+              <div key={i} style={{padding:'12px 0',borderBottom:i<pendingOnly.length-1?'1px solid #1f2937':'none'}}>
+                <div style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between'}}>
+                  <div>
+                    <div style={{fontWeight:600,fontSize:'14px'}}>{inv.name||inv.email}</div>
+                    <div style={{fontSize:'12px',color:'#6b7280'}}>{inv.email}</div>
+                    {inv.clientName&&<div style={{fontSize:'11px',color:'#d1d5db',marginTop:'3px'}}>📁 {inv.clientName}</div>}
+                    {inv.allowedMetaAccounts?.length>0&&<div style={{fontSize:'11px',color:'#818cf8',marginTop:'2px'}}>📘 Meta: {inv.allowedMetaAccounts.join(', ')}</div>}
+                    {inv.allowedGoogleAccounts?.length>0&&<div style={{fontSize:'11px',color:'#34d399',marginTop:'2px'}}>🟢 Google: {inv.allowedGoogleAccounts.join(', ')}</div>}
+                  </div>
+                  <div style={{display:'flex',flexDirection:'column',alignItems:'flex-end',gap:'5px',minWidth:'90px'}}>
+                    <span className="badge badge-gray">👁 Acesso Básico</span>
+                    <span style={{fontSize:'10px',color:'#f59e0b',fontWeight:600}}>● Convidado</span>
+                    <button className="btn btn-secondary" style={{fontSize:'11px',padding:'3px 8px'}} onClick={()=>isEditingP?setEditingPendingEmail(null):startEditPending(inv)}>{isEditingP?'✕ Fechar':'✏️ Editar'}</button>
+                    <button className="btn btn-secondary" style={{fontSize:'11px',padding:'3px 8px'}} onClick={()=>resendInvite(inv)}>↻ Reenviar</button>
+                    <button className="btn btn-danger" style={{fontSize:'11px',padding:'3px 8px'}} onClick={()=>removePending(inv.email)}>✕ Remover</button>
+                  </div>
+                </div>
+                {isEditingP&&<EditPanel onCancel={()=>setEditingPendingEmail(null)}/>}
               </div>
-              <div style={{display:'flex',flexDirection:'column',alignItems:'flex-end',gap:'5px'}}>
-                <span className="badge badge-gray">⏳ Pendente</span>
-                <button className="btn btn-secondary" style={{fontSize:'11px',padding:'3px 8px'}} onClick={()=>resendInvite(inv)}>↻ Reenviar</button>
-                <button className="btn btn-danger" style={{fontSize:'11px',padding:'3px 8px'}} onClick={()=>removePending(inv.email)}>✕ Remover</button>
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
-      {/* Formulário de convite direto nesta página */}
       <InviteUserCard user={user} onInvited={(inv)=>{
         const updated=[...pending.filter(p=>p.email!==inv.email),inv];
         setPending(updated);
@@ -3149,7 +3242,7 @@ const App=({user:initUser,onLogout})=>{
         </div>
       </div>
       <div className="page-content">
-        {!windsorKey&&<div className="notice">⚠️ Exibindo dados de demonstração. <button style={{background:'none',border:'none',color:'#fb923c',cursor:'pointer',textDecoration:'underline',fontSize:'inherit'}} onClick={()=>setPage('configuracoes')}>Configure sua chave Windsor</button> para dados reais.</div>}
+        {!windsorKey&&isAdmin&&<div className="notice">⚠️ Exibindo dados de demonstração. <button style={{background:'none',border:'none',color:'#fb923c',cursor:'pointer',textDecoration:'underline',fontSize:'inherit'}} onClick={()=>setPage('configuracoes')}>Configure sua chave Windsor</button> para dados reais.</div>}
         {renderPage()}
       </div>
     </div>
