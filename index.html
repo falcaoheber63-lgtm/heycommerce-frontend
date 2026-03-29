@@ -232,11 +232,11 @@ const buildUser = (sbUser, localData, token) => {
     windsorKey: isViewer ? (meta.windsorKey || localData?.windsorKey || '') : (localData?.windsorKey || ''),
     anthropicKey: localData?.anthropicKey || '',
     makeWebhook: isViewer ? (meta.makeWebhook || localData?.makeWebhook || DEFAULT_WEBHOOK) : (localData?.makeWebhook || DEFAULT_WEBHOOK),
-    // Viewers herdam os clientes/contas do convite
-    clients: isViewer ? (meta.allowedClients || localData?.clients || DEMO_CLIENTS) : (localData?.clients || DEMO_CLIENTS),
+    // Viewers herdam os clientes/contas do convite (NUNCA usa DEMO_CLIENTS)
+    clients: isViewer ? (meta.allowedClients?.length ? meta.allowedClients : []) : (localData?.clients || DEMO_CLIENTS),
     // Filtro de contas para viewers (null = todas)
-    allowedMetaAccounts: isViewer ? (meta.allowedMetaAccounts || null) : null,
-    allowedGoogleAccounts: isViewer ? (meta.allowedGoogleAccounts || null) : null,
+    allowedMetaAccounts: isViewer ? (meta.allowedMetaAccounts?.length ? meta.allowedMetaAccounts : null) : null,
+    allowedGoogleAccounts: isViewer ? (meta.allowedGoogleAccounts?.length ? meta.allowedGoogleAccounts : null) : null,
     _token: token,
   };
 };
@@ -2422,6 +2422,10 @@ const InviteUserCard=({user,onInvited})=>{
   const selClient=user.clients.find(c=>c.id===selClientId)||user.clients[0];
   const avMeta=selClient?.accounts?.facebook||[];
   const avGoogle=selClient?.accounts?.google_ads||[];
+  const metaNamesInv=selClient?.accounts?.facebookNames||{};
+  const googleNamesInv=selClient?.accounts?.googleNames||{};
+  const [searchMeta,setSearchMeta]=useState('');
+  const [searchGoogle,setSearchGoogle]=useState('');
   const togMeta=id=>setAllowedMeta(p=>p.includes(id)?p.filter(x=>x!==id):[...p,id]);
   const togGoogle=id=>setAllowedGoogle(p=>p.includes(id)?p.filter(x=>x!==id):[...p,id]);
 
@@ -2488,24 +2492,40 @@ const InviteUserCard=({user,onInvited})=>{
       {avMeta.length>0&&(
         <div className="form-group">
           <label className="form-label">📘 Contas Meta Ads (vazio = todas)</label>
-          <div style={{display:'flex',flexWrap:'wrap',gap:'6px',marginTop:'6px'}}>
-            {avMeta.map(id=>(
-              <label key={id} style={{display:'flex',alignItems:'center',gap:'5px',fontSize:'12px',cursor:'pointer',background:'rgba(99,102,241,0.1)',padding:'5px 10px',borderRadius:'6px',border:`1px solid ${allowedMeta.includes(id)?'#6366f1':'rgba(99,102,241,0.3)'}`}}>
-                <input type="checkbox" checked={allowedMeta.includes(id)} onChange={()=>togMeta(id)} style={{accentColor:'#6366f1'}}/>{id}
-              </label>
-            ))}
+          {avMeta.length>4&&<input className="form-input" style={{marginTop:'6px',marginBottom:'6px',padding:'5px 8px',fontSize:'12px'}} placeholder="🔍 Pesquisar conta..." value={searchMeta} onChange={e=>setSearchMeta(e.target.value)}/>}
+          <div style={{display:'flex',flexWrap:'wrap',gap:'6px',marginTop:'4px',maxHeight:'160px',overflowY:'auto'}}>
+            {avMeta.filter(id=>!searchMeta||(metaNamesInv[id]||id).toLowerCase().includes(searchMeta.toLowerCase())).map(id=>{
+              const nome=metaNamesInv[id];
+              return(
+                <label key={id} style={{display:'flex',alignItems:'center',gap:'5px',fontSize:'11px',cursor:'pointer',background:'rgba(99,102,241,0.1)',padding:'5px 9px',borderRadius:'6px',border:`1px solid ${allowedMeta.includes(id)?'#6366f1':'rgba(99,102,241,0.3)'}`,minWidth:'130px'}}>
+                  <input type="checkbox" checked={allowedMeta.includes(id)} onChange={()=>togMeta(id)} style={{accentColor:'#6366f1',flexShrink:0}}/>
+                  <span style={{display:'flex',flexDirection:'column',lineHeight:'1.3'}}>
+                    {nome&&<span style={{fontWeight:600,color:'#e5e7eb'}}>{nome}</span>}
+                    <span style={{color:'#9ca3af',fontSize:'10px'}}>{id}</span>
+                  </span>
+                </label>
+              );
+            })}
           </div>
         </div>
       )}
       {avGoogle.length>0&&(
         <div className="form-group">
           <label className="form-label">🟢 Contas Google Ads (vazio = todas)</label>
-          <div style={{display:'flex',flexWrap:'wrap',gap:'6px',marginTop:'6px'}}>
-            {avGoogle.map(id=>(
-              <label key={id} style={{display:'flex',alignItems:'center',gap:'5px',fontSize:'12px',cursor:'pointer',background:'rgba(16,185,129,0.1)',padding:'5px 10px',borderRadius:'6px',border:`1px solid ${allowedGoogle.includes(id)?'#10b981':'rgba(16,185,129,0.3)'}`}}>
-                <input type="checkbox" checked={allowedGoogle.includes(id)} onChange={()=>togGoogle(id)} style={{accentColor:'#10b981'}}/>{id}
-              </label>
-            ))}
+          {avGoogle.length>4&&<input className="form-input" style={{marginTop:'6px',marginBottom:'6px',padding:'5px 8px',fontSize:'12px'}} placeholder="🔍 Pesquisar conta..." value={searchGoogle} onChange={e=>setSearchGoogle(e.target.value)}/>}
+          <div style={{display:'flex',flexWrap:'wrap',gap:'6px',marginTop:'4px',maxHeight:'160px',overflowY:'auto'}}>
+            {avGoogle.filter(id=>!searchGoogle||(googleNamesInv[id]||id).toLowerCase().includes(searchGoogle.toLowerCase())).map(id=>{
+              const nome=googleNamesInv[id];
+              return(
+                <label key={id} style={{display:'flex',alignItems:'center',gap:'5px',fontSize:'11px',cursor:'pointer',background:'rgba(16,185,129,0.1)',padding:'5px 9px',borderRadius:'6px',border:`1px solid ${allowedGoogle.includes(id)?'#10b981':'rgba(16,185,129,0.3)'}`,minWidth:'130px'}}>
+                  <input type="checkbox" checked={allowedGoogle.includes(id)} onChange={()=>togGoogle(id)} style={{accentColor:'#10b981',flexShrink:0}}/>
+                  <span style={{display:'flex',flexDirection:'column',lineHeight:'1.3'}}>
+                    {nome&&<span style={{fontWeight:600,color:'#e5e7eb'}}>{nome}</span>}
+                    <span style={{color:'#9ca3af',fontSize:'10px'}}>{id}</span>
+                  </span>
+                </label>
+              );
+            })}
           </div>
         </div>
       )}
@@ -2528,9 +2548,12 @@ const UsuariosPage=({user})=>{
   const [editMsg,setEditMsg]=useState('');
   const [editingPendingEmail,setEditingPendingEmail]=useState(null);
 
-  // Todas as contas disponíveis do admin (para checkboxes de edição)
-  const adminMeta=user.clients.flatMap(c=>c.accounts?.facebook||[]);
-  const adminGoogle=user.clients.flatMap(c=>c.accounts?.google_ads||[]);
+  // Todas as contas disponíveis do admin + mapa de nomes
+  const adminMeta=[...new Set(user.clients.flatMap(c=>c.accounts?.facebook||[]))].filter(Boolean);
+  const adminGoogle=[...new Set(user.clients.flatMap(c=>c.accounts?.google_ads||[]))].filter(Boolean);
+  // Mapa id→nome para exibir nomes amigáveis nos checkboxes
+  const allMetaNames=Object.assign({},...user.clients.map(c=>c.accounts?.facebookNames||{}));
+  const allGoogleNames=Object.assign({},...user.clients.map(c=>c.accounts?.googleNames||{}));
 
   const loadProfiles=()=>{
     upsertProfile(user);
@@ -2600,7 +2623,20 @@ const UsuariosPage=({user})=>{
   const activeEmails=new Set(allProfiles.map(p=>p.email));
   const pendingOnly=pending.filter(p=>!activeEmails.has(p.email));
 
-  const EditPanel=({onSave,onCancel})=>(
+  const AccCheckbox=({id,checked,onChange,color,rgb,nameMap})=>{
+    const nome=nameMap[id];
+    return(
+      <label style={{display:'flex',alignItems:'center',gap:'5px',fontSize:'11px',cursor:'pointer',background:`rgba(${rgb},0.1)`,padding:'5px 9px',borderRadius:'6px',border:`1px solid ${checked?color:`rgba(${rgb},0.3)`}`,minWidth:'120px'}}>
+        <input type="checkbox" checked={checked} onChange={onChange} style={{accentColor:color,flexShrink:0}}/>
+        <span style={{display:'flex',flexDirection:'column',lineHeight:'1.3'}}>
+          {nome&&<span style={{fontWeight:600,color:'#e5e7eb'}}>{nome}</span>}
+          <span style={{color:'#9ca3af',fontSize:'10px'}}>{id}</span>
+        </span>
+      </label>
+    );
+  };
+
+  const EditPanel=({onCancel})=>(
     <div style={{background:'#0f1623',border:'1px solid #374151',borderRadius:'8px',padding:'14px',marginTop:'10px'}}>
       <div className="form-group">
         <label className="form-label">Nome</label>
@@ -2608,27 +2644,26 @@ const UsuariosPage=({user})=>{
       </div>
       {adminMeta.length>0&&(
         <div className="form-group">
-          <label className="form-label">📘 Contas Meta (vazio = todas)</label>
-          <div style={{display:'flex',flexWrap:'wrap',gap:'5px',marginTop:'5px'}}>
+          <label className="form-label">📘 Contas Meta Ads (vazio = todas)</label>
+          <div style={{display:'flex',flexWrap:'wrap',gap:'6px',marginTop:'6px'}}>
             {adminMeta.map(id=>(
-              <label key={id} style={{display:'flex',alignItems:'center',gap:'4px',fontSize:'11px',cursor:'pointer',background:'rgba(99,102,241,0.1)',padding:'4px 8px',borderRadius:'5px',border:`1px solid ${editForm.allowed_meta?.includes(id)?'#6366f1':'rgba(99,102,241,0.3)'}`}}>
-                <input type="checkbox" checked={editForm.allowed_meta?.includes(id)||false} onChange={()=>togEditMeta(id)} style={{accentColor:'#6366f1'}}/>{id}
-              </label>
+              <AccCheckbox key={id} id={id} checked={editForm.allowed_meta?.includes(id)||false} onChange={()=>togEditMeta(id)} color="#6366f1" rgb="99,102,241" nameMap={allMetaNames}/>
             ))}
           </div>
         </div>
       )}
       {adminGoogle.length>0&&(
         <div className="form-group">
-          <label className="form-label">🟢 Contas Google (vazio = todas)</label>
-          <div style={{display:'flex',flexWrap:'wrap',gap:'5px',marginTop:'5px'}}>
+          <label className="form-label">🟢 Contas Google Ads (vazio = todas)</label>
+          <div style={{display:'flex',flexWrap:'wrap',gap:'6px',marginTop:'6px'}}>
             {adminGoogle.map(id=>(
-              <label key={id} style={{display:'flex',alignItems:'center',gap:'4px',fontSize:'11px',cursor:'pointer',background:'rgba(16,185,129,0.1)',padding:'4px 8px',borderRadius:'5px',border:`1px solid ${editForm.allowed_google?.includes(id)?'#10b981':'rgba(16,185,129,0.3)'}`}}>
-                <input type="checkbox" checked={editForm.allowed_google?.includes(id)||false} onChange={()=>togEditGoogle(id)} style={{accentColor:'#10b981'}}/>{id}
-              </label>
+              <AccCheckbox key={id} id={id} checked={editForm.allowed_google?.includes(id)||false} onChange={()=>togEditGoogle(id)} color="#10b981" rgb="16,185,129" nameMap={allGoogleNames}/>
             ))}
           </div>
         </div>
+      )}
+      {adminMeta.length===0&&adminGoogle.length===0&&(
+        <div style={{color:'#6b7280',fontSize:'12px',marginBottom:'10px'}}>Nenhuma conta cadastrada. Configure clientes em Clientes → adicionar contas.</div>
       )}
       <div style={{display:'flex',gap:'8px',alignItems:'center',marginTop:'4px'}}>
         <button className="btn btn-primary" style={{fontSize:'12px',padding:'5px 14px'}} onClick={saveEdit}>💾 Salvar</button>
