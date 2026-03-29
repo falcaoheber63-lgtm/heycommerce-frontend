@@ -245,6 +245,39 @@ const getUsers=()=>[];
 const saveUsers=()=>{};
 
 // ── PROFILE SYNC (Supabase) ──
+// ── WINDSOR CACHE (localStorage, 2 camadas) ──
+// Camada 1: dados históricos (sem hoje) → 24h
+// Camada 2: dados que incluem hoje → 30 min
+const _wToday=()=>new Date().toISOString().split('T')[0];
+const _wCacheKey=(plat,accounts,from,to)=>`wc_${plat}_${[...accounts].sort().join('|')}_${from}_${to}`;
+const windsorCacheGet=(plat,accounts,from,to)=>{
+  try{
+    const raw=localStorage.getItem(_wCacheKey(plat,accounts,from,to));
+    if(!raw)return null;
+    const {d,ts,ttl}=JSON.parse(raw);
+    if(Date.now()-ts>ttl){localStorage.removeItem(_wCacheKey(plat,accounts,from,to));return null;}
+    return d;
+  }catch{return null;}
+};
+const windsorCacheSet=(plat,accounts,from,to,data)=>{
+  try{
+    const isHistorical=to<_wToday();
+    const ttl=isHistorical?86400000:1800000; // 24h histórico, 30min atual
+    const key=_wCacheKey(plat,accounts,from,to);
+    localStorage.setItem(key,JSON.stringify({d:data,ts:Date.now(),ttl}));
+  }catch{
+    // localStorage cheio: limpa cache Windsor antigo
+    const old=[];
+    for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);if(k?.startsWith('wc_'))old.push(k);}
+    old.forEach(k=>localStorage.removeItem(k));
+  }
+};
+const windsorCacheClear=()=>{
+  const keys=[];
+  for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);if(k?.startsWith('wc_'))keys.push(k);}
+  keys.forEach(k=>localStorage.removeItem(k));
+};
+
 // Salva/atualiza o perfil do usuário na tabela profiles após cada login
 const upsertProfile=async(user)=>{
   try{
@@ -2837,7 +2870,9 @@ const ConfiguracoesPage=({user,onUpdateUser,onLogout})=>{
               <span>{n}</span><span className={`badge ${k?'badge-green':'badge-gray'}`}>{k?'✓ Conectado':'Não configurado'}</span>
             </div>
           ))}
-          <button className="btn btn-danger" style={{width:'100%',marginTop:'14px',fontSize:'12px'}} onClick={onLogout}>🚪 Sair</button>
+          <button className="btn btn-secondary" style={{width:'100%',marginTop:'10px',fontSize:'12px'}} onClick={()=>{windsorCacheClear();alert('Cache Windsor limpo! Próxima consulta buscará dados frescos do Windsor.');}}>🗑️ Limpar cache Windsor</button>
+          <div style={{fontSize:'10px',color:'#4b5563',marginTop:'4px',textAlign:'center'}}>Cache: 30 min (dados do dia) · 24h (histórico)</div>
+          <button className="btn btn-danger" style={{width:'100%',marginTop:'10px',fontSize:'12px'}} onClick={onLogout}>🚪 Sair</button>
         </div>
         <InviteUserCard user={user}/>
       </div>
@@ -3032,8 +3067,9 @@ const App=({user:initUser,onLogout})=>{
     const days=Math.max(1,Math.floor((new Date(dateTo)-new Date(dateFrom))/86400000)+1);
     const fetch_=async()=>{
       setLoading(true);
-      setRawData({}); // limpa dados anteriores imediatamente
+      // NÃO limpa rawData imediatamente — mantém dados antigos enquanto carrega
       const nd={};
+      let allFromCache=true;
       for(const plat of platforms){
         const allAccounts=activeClient?.accounts?.[plat]||[];
         const selIds=plat==='facebook'?selectedMetaIds:selectedGoogleIds;
@@ -3041,6 +3077,16 @@ const App=({user:initUser,onLogout})=>{
         const accounts=selIds===null?allAccounts:selIds.filter(id=>allAccounts.includes(id));
         if(!windsorKey){nd[plat]=genDemo(plat,days);continue;}
         if(!accounts.length){nd[plat]=[];continue;}
+
+        // ── CACHE CHECK ──
+        const cached=windsorCacheGet(plat,accounts,dateFrom,dateTo);
+        if(cached){
+          nd[plat]=cached;
+          console.log(`Windsor ${plat}: ${cached.length} rows (CACHE HIT ⚡)`);
+          continue;
+        }
+        allFromCache=false;
+
         try{
           // Adiciona account_id ao request para permitir filtro no cliente
           const customEvField=activeClient?.customEventField||'';
@@ -3082,8 +3128,10 @@ const App=({user:initUser,onLogout})=>{
               return normSel.includes(rid);
             });
           }
+          // ── SALVA NO CACHE ──
+          windsorCacheSet(plat,accounts,dateFrom,dateTo,rows);
           nd[plat]=rows;
-          console.log(`Windsor ${plat}: ${rows.length} rows (contas: ${selIds===null?'todas':selIds.join(',')})`);
+          console.log(`Windsor ${plat}: ${rows.length} rows (contas: ${selIds===null?'todas':selIds.join(',')}) → salvo no cache`);
         }catch(e){
           console.error(`Windsor ${plat} erro:`,e.message);
           nd[plat]=genDemo(plat,days);
@@ -3157,7 +3205,7 @@ const App=({user:initUser,onLogout})=>{
   const TITLES={dashboard:'Dashboard',insights_campanhas:'Insights de Campanhas',cerebro:'Cérebro Gestor',usuarios:'Usuários',clientes:'Clientes',configuracoes:'Configurações'};
 
   const renderPage=()=>{
-    if(loading)return<div style={{textAlign:'center',padding:'60px',color:'#6b7280'}}><div className="loading-pulse" style={{fontSize:'32px'}}>⏳</div><div style={{marginTop:'12px',fontSize:'14px'}}>Carregando{windsorKey?' dados Windsor':' demonstração'}…</div></div>;
+    if(loading)return<div style={{textAlign:'center',padding:'60px',color:'#6b7280'}}><div className="loading-pulse" style={{fontSize:'32px'}}>⏳</div><div style={{marginTop:'12px',fontSize:'14px'}}>Carregando{windsorKey?' dados Windsor':' demonstração'}…</div><div style={{marginTop:'6px',fontSize:'11px',color:'#4b5563'}}>Verificando cache local primeiro…</div></div>;
     switch(page){
       case'dashboard':return<DashboardPage allData={allData} platforms={platforms} objConfig={objConfig} compareAllData={compareAllData} compareMode={compareMode}/>;
       case'insights_campanhas':return<InsightsCampanhasPage allData={allData} dateFrom={dateFrom} dateTo={dateTo} objConfig={objConfig}/>;
