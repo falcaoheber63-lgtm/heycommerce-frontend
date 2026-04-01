@@ -279,19 +279,173 @@ const windsorCacheClear=()=>{
 };
 
 // Salva/atualiza o perfil do usuário na tabela profiles após cada login
+// NOTA: para viewers, NÃO sobrescreve allowed_accounts (o admin define via viewer_access)
 const upsertProfile=async(user)=>{
   try{
-    await sb.from('profiles').upsert({
+    const isViewer=user.role==='viewer';
+    const base={
       id:user.id,
       email:user.email,
       name:user.name||user.email,
       role:user.role||'admin',
-      allowed_meta_accounts:user.allowedMetaAccounts||[],
-      allowed_google_accounts:user.allowedGoogleAccounts||[],
       client_name:user.clients?.[0]?.name||'',
       last_login:new Date().toISOString()
-    },{onConflict:'id'});
+    };
+    // Admins gravam suas contas; viewers NÃO sobrescrevem (preserva o que o admin configurou)
+    if(!isViewer){
+      base.allowed_meta_accounts=user.allowedMetaAccounts||[];
+      base.allowed_google_accounts=user.allowedGoogleAccounts||[];
+    }
+    await sb.from('profiles').upsert(base,{onConflict:'id'});
   }catch(e){console.warn('upsertProfile error:',e.message);}
+};
+
+// ── VIEWER ACCESS (tabela viewer_access — fonte de verdade para permissões de viewers) ──
+// Grava ou atualiza acesso de um viewer pelo email (chamado pelo admin ao convidar/editar)
+const upsertViewerAccess=async(email,data)=>{
+  try{
+    await sb.from('viewer_access').upsert({
+      email:email.toLowerCase().trim(),
+      role:data.role||'viewer',
+      allowed_meta_accounts:data.allowedMetaAccounts||[],
+      allowed_google_accounts:data.allowedGoogleAccounts||[],
+      allowed_clients:data.allowedClients||[],
+      windsor_key:data.windsorKey||'',
+      make_webhook:data.makeWebhook||'',
+      invited_by:data.invitedBy||null,
+      updated_at:new Date().toISOString()
+    },{onConflict:'email'});
+  }catch(e){console.warn('upsertViewerAccess error:',e.message);}
+};
+
+// Lê viewer_access pelo email — retorna null se não encontrado
+const fetchViewerAccess=async(email)=>{
+  try{
+    const {data,error}=await sb.from('viewer_access').select('*').eq('email',email.toLowerCase().trim()).maybeSingle();
+    if(error)throw error;
+    return data;
+  }catch(e){console.warn('fetchViewerAccess error:',e.message);return null;}
+};
+
+// Mescla viewer_access com o usuário base (viewer_access tem prioridade sobre user_metadata)
+const applyViewerAccess=(baseUser,access)=>{
+  if(!access)return baseUser;
+  return{
+    ...baseUser,
+    role:access.role||baseUser.role,
+    allowedMetaAccounts:access.allowed_meta_accounts?.length?access.allowed_meta_accounts:baseUser.allowedMetaAccounts,
+    allowedGoogleAccounts:access.allowed_google_accounts?.length?access.allowed_google_accounts:baseUser.allowedGoogleAccounts,
+    clients:access.allowed_clients?.length?access.allowed_clients:baseUser.clients,
+    windsorKey:access.windsor_key||baseUser.windsorKey,
+    makeWebhook:access.make_webhook||baseUser.makeWebhook,
+  };
+};
+
+// ── AD DATA SYNC (Windsor → Supabase) ──
+// Divide intervalo de datas em chunks mensais (para não sobrecarregar Windsor)
+const splitMonths=(from,to)=>{
+  const chunks=[];
+  let cur=new Date(from+'T00:00:00');
+  const end=new Date(to+'T00:00:00');
+  while(cur<=end){
+    const y=cur.getFullYear(),m=cur.getMonth();
+    const chunkFrom=cur.toISOString().split('T')[0];
+    const lastDay=new Date(y,m+1,0);
+    const chunkTo=lastDay<=end?lastDay.toISOString().split('T')[0]:to;
+    chunks.push({from:chunkFrom,to:chunkTo});
+    cur=new Date(y,m+1,1);
+  }
+  return chunks;
+};
+
+// Retorna Set de datas (YYYY-MM-DD) já sincronizadas no Supabase para essas contas
+const getSyncedDates=async(platform,accountIds)=>{
+  if(!accountIds.length)return new Set();
+  try{
+    const{data}=await sb.from('ad_data').select('date').eq('platform',platform).in('account_id',accountIds);
+    return new Set((data||[]).map(r=>r.date));
+  }catch{return new Set();}
+};
+
+// Busca dados do Supabase para um intervalo
+const queryAdData=async(platform,accountIds,from,to)=>{
+  if(!accountIds.length)return[];
+  try{
+    const{data,error}=await sb.from('ad_data').select('*').eq('platform',platform).in('account_id',accountIds).gte('date',from).lte('date',to).order('date',{ascending:true});
+    if(error)throw error;
+    // Normaliza para o mesmo formato que o Windsor retorna
+    return(data||[]).map(r=>({
+      date:r.date,account_id:r.account_id,campaign_name:r.campaign_name||'',
+      adset_name:r.adset_name||'',spend:Number(r.spend)||0,
+      impressions:Number(r.impressions)||0,clicks:Number(r.clicks)||0,
+      ctr:Number(r.ctr)||0,cpm:Number(r.cpm)||0,cpc:Number(r.cpc)||0,
+      frequency:Number(r.frequency)||0,reach:Number(r.reach)||0,
+      purchases:Number(r.purchases)||0,purchase_value:Number(r.purchase_value)||0,
+      add_to_cart:Number(r.add_to_cart)||0,initiate_checkout:Number(r.initiate_checkout)||0,
+      messaging_conversations:Number(r.messaging_conversations)||0,
+      lead:Number(r.lead_count)||0,objective:r.objective||'',
+      actions_purchase:Number(r.purchases)||0,action_values_purchase:Number(r.purchase_value)||0,
+      actions_add_to_cart:Number(r.add_to_cart)||0,actions_initiate_checkout:Number(r.initiate_checkout)||0,
+      actions_onsite_conversion_messaging_conversation_started_7d:Number(r.messaging_conversations)||0,
+      actions_lead:Number(r.lead_count)||0
+    }));
+  }catch(e){console.warn('queryAdData:',e.message);return null;}// null = fallback para Windsor
+};
+
+// Sincroniza um platform + contas para um intervalo de datas, salvando no Supabase
+const syncWindsorToSupabase=async(platform,accountIds,from,to,windsorKey,userId,onProgress)=>{
+  if(!windsorKey||!accountIds.length)return{synced:0,skipped:0};
+  const FIELDS_FB='date,account_id,campaign_name,adset_name,spend,impressions,clicks,ctr,cpm,cpc,frequency,reach,actions_purchase,action_values_purchase,actions_add_to_cart,actions_initiate_checkout,actions_onsite_conversion_messaging_conversation_started_7d,actions_lead,objective';
+  const FIELDS_GA='date,account_id,customer_id,campaign,ad_group_name,spend,impressions,clicks,ctr,cpc,conversions,cost_per_conversion';
+  const chunks=splitMonths(from,to);
+  let totalSynced=0,totalSkipped=0;
+  for(let i=0;i<chunks.length;i++){
+    const chunk=chunks[i];
+    if(onProgress)onProgress({step:i+1,total:chunks.length,from:chunk.from,to:chunk.to,platform});
+    try{
+      const fields=platform==='facebook'?FIELDS_FB:FIELDS_GA;
+      const url=`https://connectors.windsor.ai/${platform}?api_key=${windsorKey}&date_from=${chunk.from}&date_to=${chunk.to}&fields=${fields}&accounts=${accountIds.join(',')}`;
+      const res=await fetch(url);
+      if(!res.ok){console.warn(`Windsor ${platform} ${chunk.from}-${chunk.to}: HTTP ${res.status}`);continue;}
+      const json=await res.json();
+      const rawRows=json.result||json.data||(Array.isArray(json)?json:[]);
+      if(!Array.isArray(rawRows)||!rawRows.length){totalSkipped++;continue;}
+      // Mapeia para schema ad_data
+      const rows=rawRows.map(r=>({
+        platform,
+        account_id:r.account_id||r.customer_id||'',
+        date:r.date,
+        campaign_name:r.campaign_name||r.campaign||'',
+        adset_name:r.adset_name||r.ad_group_name||'',
+        spend:Number(r.spend)||0,
+        impressions:Number(r.impressions)||0,
+        clicks:Number(r.clicks)||0,
+        ctr:Number(r.ctr)||0,
+        cpm:Number(r.cpm)||0,
+        cpc:Number(r.cpc)||0,
+        frequency:Number(r.frequency)||0,
+        reach:Number(r.reach||Math.floor((r.impressions||0)*0.82))||0,
+        purchases:Number(r.actions_purchase||r.conversions)||0,
+        purchase_value:Number(r.action_values_purchase)||0,
+        add_to_cart:Number(r.actions_add_to_cart)||0,
+        initiate_checkout:Number(r.actions_initiate_checkout)||0,
+        messaging_conversations:Number(r.actions_onsite_conversion_messaging_conversation_started_7d)||0,
+        lead_count:Number(r.actions_lead)||0,
+        objective:r.objective||'',
+        synced_by:userId||null
+      })).filter(r=>r.account_id&&r.date);
+      // Upsert em lotes de 500
+      for(let j=0;j<rows.length;j+=500){
+        const batch=rows.slice(j,j+500);
+        const{error}=await sb.from('ad_data').upsert(batch,{onConflict:'platform,account_id,date,campaign_name,adset_name',ignoreDuplicates:false});
+        if(!error)totalSynced+=batch.length;
+      }
+      // Registra no sync_log
+      await sb.from('sync_log').upsert({platform,account_id:accountIds.join(','),synced_from:chunk.from,synced_to:chunk.to,row_count:rows.length,synced_by:userId||null},{onConflict:'platform,account_id,synced_from,synced_to'});
+    }catch(e){console.error(`Sync ${platform} ${chunk.from}-${chunk.to}:`,e.message);}
+    await new Promise(r=>setTimeout(r,200));// pausa anti-rate-limit
+  }
+  return{synced:totalSynced,skipped:totalSkipped};
 };
 
 // ── CLAUDE API DIRECT CALL ──
@@ -2519,6 +2673,16 @@ const InviteUserCard=({user,onInvited,existingEmails=[]})=>{
         }
       });
       if(error)throw new Error(error.message);
+      // ✅ Grava permissões no banco (viewer_access) — fonte de verdade independente do user_metadata
+      await upsertViewerAccess(email,{
+        role:inviteRole,
+        allowedMetaAccounts:isAdminInvite?[]:metaShare,
+        allowedGoogleAccounts:isAdminInvite?[]:googleShare,
+        allowedClients:isAdminInvite?user.clients:viewerClient,
+        windsorKey:isAdminInvite?'':(user.windsorKey||''),
+        makeWebhook:isAdminInvite?'':(user.makeWebhook||''),
+        invitedBy:user.id
+      });
       // Salva na lista local do admin
       const invKey=`hc_${user.id}_invited`;
       const existing=JSON.parse(localStorage.getItem(invKey)||'[]');
@@ -2526,7 +2690,7 @@ const InviteUserCard=({user,onInvited,existingEmails=[]})=>{
       const updated=[...existing.filter(u=>u.email!==email),newInv];
       localStorage.setItem(invKey,JSON.stringify(updated));
       if(onInvited)onInvited(newInv);
-      setMsg(`✓ Convite enviado para ${email}!`);
+      setMsg(`✓ Convite enviado para ${email}! Permissões salvas no banco.`);
       setEmail('');setName('');setAllowedMeta([]);setAllowedGoogle([]);setInviteRole('viewer');
     }catch(e){setErr('Erro ao enviar convite: '+e.message);}
     setLoading(false);
@@ -2660,9 +2824,10 @@ const UsuariosPage=({user})=>{
   const togEditGoogle=(id)=>setEditForm(f=>({...f,allowed_google:f.allowed_google.includes(id)?f.allowed_google.filter(x=>x!==id):[...f.allowed_google,id]}));
 
   const removeProfile=async(profileId,profileEmail)=>{
-    if(!window.confirm(`Remover ${profileEmail} da lista de usuários? O acesso será revogado no próximo login.`))return;
-    const {error}=await sb.from('profiles').delete().eq('id',profileId);
-    if(error){alert('Erro ao remover: '+error.message);return;}
+    if(!window.confirm(`Remover ${profileEmail}? O acesso será bloqueado no próximo login.`))return;
+    // Remove profiles + viewer_access para revogar acesso completamente
+    await sb.from('profiles').delete().eq('id',profileId);
+    await sb.from('viewer_access').delete().eq('email',profileEmail.toLowerCase());
     setProfiles(ps=>ps.filter(p=>p.id!==profileId));
   };
 
@@ -2670,12 +2835,15 @@ const UsuariosPage=({user})=>{
     const newRole=p.role==='admin'?'viewer':'admin';
     const {error}=await sb.from('profiles').update({role:newRole}).eq('id',p.id);
     if(error){alert('Erro: '+error.message);return;}
+    // Atualiza viewer_access com novo role
+    await upsertViewerAccess(p.email,{role:newRole,allowedMetaAccounts:p.allowed_meta_accounts||[],allowedGoogleAccounts:p.allowed_google_accounts||[],allowedClients:[],windsorKey:user.windsorKey||'',makeWebhook:user.makeWebhook||'',invitedBy:user.id});
     setProfiles(ps=>ps.map(x=>x.id===p.id?{...x,role:newRole}:x));
   };
 
   const saveEdit=async()=>{
     setEditMsg('salvando…');
     if(editingId){
+      const editingProfile=allProfiles.find(p=>p.id===editingId);
       const {error}=await sb.from('profiles').update({
         name:editForm.name,
         allowed_meta_accounts:editForm.allowed_meta,
@@ -2683,11 +2851,36 @@ const UsuariosPage=({user})=>{
       }).eq('id',editingId);
       if(error){setEditMsg('Erro: '+error.message);return;}
       setProfiles(ps=>ps.map(p=>p.id===editingId?{...p,name:editForm.name,allowed_meta_accounts:editForm.allowed_meta,allowed_google_accounts:editForm.allowed_google}:p));
+      // ✅ Atualiza viewer_access pelo email — garante que na próxima vez que logar, recebe contas corretas
+      if(editingProfile?.email){
+        await upsertViewerAccess(editingProfile.email,{
+          role:editingProfile.role||'viewer',
+          allowedMetaAccounts:editForm.allowed_meta,
+          allowedGoogleAccounts:editForm.allowed_google,
+          allowedClients:editForm.allowed_clients||[],
+          windsorKey:user.windsorKey||'',
+          makeWebhook:user.makeWebhook||'',
+          invitedBy:user.id
+        });
+      }
     }
     if(editingPendingEmail){
       const updated=pending.map(p=>p.email===editingPendingEmail?{...p,name:editForm.name,allowedMetaAccounts:editForm.allowed_meta,allowedGoogleAccounts:editForm.allowed_google}:p);
       setPending(updated);
       localStorage.setItem(invKey,JSON.stringify(updated));
+      // ✅ Atualiza viewer_access para convidados pendentes também
+      const pendingInv=pending.find(p=>p.email===editingPendingEmail);
+      if(pendingInv){
+        await upsertViewerAccess(editingPendingEmail,{
+          role:pendingInv.role||'viewer',
+          allowedMetaAccounts:editForm.allowed_meta,
+          allowedGoogleAccounts:editForm.allowed_google,
+          allowedClients:[],
+          windsorKey:user.windsorKey||'',
+          makeWebhook:user.makeWebhook||'',
+          invitedBy:user.id
+        });
+      }
     }
     setEditMsg('✓ Salvo!');
     setTimeout(()=>{setEditingId(null);setEditingPendingEmail(null);setEditMsg('');},1000);
@@ -2853,7 +3046,89 @@ const UsuariosPage=({user})=>{
 };
 
 // ── CONFIGURAÇÕES PAGE ──
-const ConfiguracoesPage=({user,onUpdateUser,onLogout})=>{
+// ── SYNC PANEL (Windsor → Supabase histórico) ──
+const SyncPanel=({user,clients})=>{
+  const [syncing,setSyncing]=useState(false);
+  const [progress,setProgress]=useState(null);// {step,total,from,to,platform}
+  const [result,setResult]=useState(null);// {synced,errors,duration}
+  const [histDays,setHistDays]=useState(365);// quantos dias de histórico
+  const [lastSync,setLastSync]=useState(null);
+
+  // Carrega último sync ao montar
+  useEffect(()=>{
+    sb.from('sync_log').select('synced_at').order('synced_at',{ascending:false}).limit(1).then(({data})=>{
+      if(data?.[0])setLastSync(new Date(data[0].synced_at).toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'}));
+    });
+  },[]);
+
+  const startSync=async()=>{
+    if(!user.windsorKey){alert('Configure a chave Windsor antes de sincronizar.');return;}
+    if(!window.confirm(`Sincronizar ${histDays} dias de histórico para todas as contas?\n\nIsso pode levar alguns minutos dependendo do volume de dados.`))return;
+    setSyncing(true);setResult(null);
+    const t0=Date.now();
+    let totalSynced=0,totalErrors=0;
+    const from=subDays(today(),histDays);
+    const cutoff=subDays(today(),2);// só histórico, não recente
+    const to=cutoff<from?from:cutoff;
+    const platforms=['facebook','google_ads'];
+    for(const client of clients){
+      for(const plat of platforms){
+        const accounts=client.accounts?.[plat]||[];
+        if(!accounts.length)continue;
+        const res=await syncWindsorToSupabase(plat,accounts,from,to,user.windsorKey,user.id,(prog)=>{
+          setProgress({...prog,client:client.name});
+        });
+        totalSynced+=res.synced;
+        if(res.error)totalErrors++;
+      }
+    }
+    const secs=Math.round((Date.now()-t0)/1000);
+    setResult({synced:totalSynced,errors:totalErrors,duration:secs});
+    setLastSync(new Date().toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'}));
+    setSyncing(false);setProgress(null);
+  };
+
+  return(
+    <div className="card" style={{marginBottom:'14px'}}>
+      <h3 style={{marginTop:0}}>🗄️ Backup de Dados Históricos</h3>
+      <div style={{fontSize:'12px',color:'#6b7280',marginBottom:'14px',lineHeight:'1.7'}}>
+        Sincroniza dados do Windsor para o banco Supabase. Após o backup, consultas históricas ficam instantâneas — Windsor só é usado para os últimos 2 dias.
+      </div>
+      {lastSync&&<div style={{fontSize:'11px',color:'#34d399',marginBottom:'12px'}}>✓ Último sync: {lastSync}</div>}
+      <div className="form-group">
+        <label className="form-label">Período do histórico</label>
+        <select className="form-input" value={histDays} onChange={e=>setHistDays(Number(e.target.value))} disabled={syncing}>
+          <option value={90}>Últimos 90 dias</option>
+          <option value={180}>Últimos 6 meses</option>
+          <option value={365}>Último ano (recomendado)</option>
+          <option value={730}>Últimos 2 anos</option>
+        </select>
+      </div>
+      {syncing&&progress&&(
+        <div style={{marginBottom:'12px'}}>
+          <div style={{fontSize:'12px',color:'#818cf8',marginBottom:'6px'}}>
+            ⏳ {progress.client} · {progress.platform==='facebook'?'📘 Meta':'🟢 Google'} · {progress.from} → {progress.to} ({progress.step}/{progress.total})
+          </div>
+          <div style={{background:'#1f2937',borderRadius:'6px',height:'6px',overflow:'hidden'}}>
+            <div style={{background:'#6366f1',height:'100%',width:`${Math.round(progress.step/progress.total*100)}%`,transition:'width .3s'}}/>
+          </div>
+        </div>
+      )}
+      {result&&!syncing&&(
+        <div style={{background:result.errors?'rgba(239,68,68,.08)':'rgba(16,185,129,.08)',border:`1px solid ${result.errors?'rgba(239,68,68,.3)':'rgba(16,185,129,.3)'}`,borderRadius:'6px',padding:'10px 12px',marginBottom:'12px',fontSize:'12px'}}>
+          {result.errors?'⚠️':'✅'} Sync concluído em {result.duration}s · {result.synced.toLocaleString()} registros salvos
+          {result.errors>0&&` · ${result.errors} erro(s)`}
+        </div>
+      )}
+      <button className="btn btn-primary" style={{width:'100%'}} onClick={startSync} disabled={syncing||!user.windsorKey}>
+        {syncing?'⏳ Sincronizando…':'🔄 Sincronizar histórico agora'}
+      </button>
+      {!user.windsorKey&&<div style={{fontSize:'11px',color:'#f59e0b',marginTop:'6px',textAlign:'center'}}>Configure a chave Windsor primeiro</div>}
+    </div>
+  );
+};
+
+const ConfiguracoesPage=({user,onUpdateUser,onLogout,clients=[]})=>{
   const [form,setForm]=useState({windsorKey:user.windsorKey||'',anthropicKey:user.anthropicKey||'',makeWebhook:user.makeWebhook||'',name:user.name||''});
   const [pw,setPw]=useState({old:'',new1:'',new2:''});
   const [msg,setMsg]=useState('');
@@ -2907,7 +3182,8 @@ const ConfiguracoesPage=({user,onUpdateUser,onLogout})=>{
     <h2>Configurações</h2>
     {msg&&<div style={{background:msg.includes('Erro')||msg.includes('incorreta')||msg.includes('coincidem')?'rgba(239,68,68,.1)':'rgba(16,185,129,.1)',border:`1px solid ${msg.includes('Erro')||msg.includes('incorreta')||msg.includes('coincidem')?'rgba(239,68,68,.3)':'rgba(16,185,129,.3)'}`,borderRadius:'6px',padding:'8px 14px',fontSize:'13px',marginBottom:'16px',color:msg.includes('Erro')||msg.includes('incorreta')||msg.includes('coincidem')?'#f87171':'#34d399'}}>{msg}</div>}
     <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'16px',maxWidth:'800px'}}>
-      <div className="card">
+      <div>
+        <div className="card" style={{marginBottom:'14px'}}>
         <h3 style={{marginTop:0}}>🔗 Integrações</h3>
         <div className="form-group">
           <label className="form-label">Chave Windsor.ai</label>
@@ -2920,6 +3196,8 @@ const ConfiguracoesPage=({user,onUpdateUser,onLogout})=>{
         <div className="form-group"><label className="form-label">Anthropic API Key</label><input className="form-input" type="password" value={form.anthropicKey} onChange={e=>setForm({...form,anthropicKey:e.target.value})} placeholder="sk-ant-..."/></div>
         <div className="form-group"><label className="form-label">Make.com Webhook URL</label><input className="form-input" type="text" value={form.makeWebhook} onChange={e=>setForm({...form,makeWebhook:e.target.value})} placeholder="https://hook.us2.make.com/..."/></div>
         <button className="btn btn-primary" style={{width:'100%'}} onClick={save}>💾 Salvar</button>
+        </div>
+        <SyncPanel user={{...user,...form}} clients={clients}/>
       </div>
       <div>
         <div className="card" style={{marginBottom:'14px'}}>
@@ -3133,78 +3411,101 @@ const App=({user:initUser,onLogout})=>{
   },[]);
 
   // Fetch Windsor data
+  // Estratégia: datas históricas (> 2 dias atrás) → Supabase primeiro, Windsor como fallback
+  //             dados recentes (ontem / hoje) → sempre Windsor (dados frescos)
   useEffect(()=>{
     let cancelled=false;
     const days=Math.max(1,Math.floor((new Date(dateTo)-new Date(dateFrom))/86400000)+1);
+    // "Cutoff" = 2 dias atrás. Datas < cutoff → Supabase. Datas >= cutoff → Windsor.
+    const cutoff=subDays(today(),2);
+    const historicalTo=dateTo<cutoff?dateTo:cutoff<dateFrom?null:subDays(cutoff,1)||dateFrom;
+    const recentFrom=dateFrom>cutoff?dateFrom:cutoff;
+
+    const normalizeRows=(rawRows,plat,selIds,customEvField)=>{
+      let rows=rawRows.map(r=>({
+        ...r,
+        campaign_name:r.campaign_name||r.campaign||'',
+        adset_name:r.adset_name||r.ad_group_name||'',
+        reach:r.reach||Math.floor((r.impressions||0)*0.82),
+        frequency:r.frequency||(r.reach?(r.impressions||0)/r.reach:1),
+        purchases:r.actions_purchase||r.purchases||r.conversions||0,
+        purchase_value:r.action_values_purchase||r.purchase_value||0,
+        add_to_cart:r.actions_add_to_cart||r.add_to_cart||0,
+        initiate_checkout:r.actions_initiate_checkout||r.initiate_checkout||0,
+        messaging_conversations:r.actions_onsite_conversion_messaging_conversation_started_7d||r.messaging_conversations||0,
+        lead:r.actions_lead||r.lead||r.lead_count||0,
+        custom_event:(customEvField?r[customEvField]:null)??r.custom_event??0
+      }));
+      if(selIds!==null&&selIds.length>0){
+        const normSel=selIds.map(id=>String(id).replace(/^act_/,'').trim());
+        rows=rows.filter(r=>{
+          const rid=String(r.account_id||r.customer_id||'').replace(/^act_/,'').trim();
+          if(!rid||rid==='null'||rid==='0'||rid==='undefined')return true;
+          return normSel.includes(rid);
+        });
+      }
+      return rows;
+    };
+
+    const fetchWindsor=async(plat,accounts,from,to,customEvField)=>{
+      const cached=windsorCacheGet(plat,accounts,from,to);
+      if(cached){console.log(`Windsor ${plat} ${from}→${to}: CACHE HIT ⚡`);return cached;}
+      const baseFB='date,account_id,campaign_name,adset_name,ad_name,spend,impressions,clicks,ctr,cpm,cpc,frequency,reach,actions_purchase,action_values_purchase,actions_add_to_cart,actions_initiate_checkout,actions_onsite_conversion_messaging_conversation_started_7d,actions_lead,objective';
+      const fields=plat==='facebook'
+        ?(customEvField&&activeClient?.objective==='custom'&&!baseFB.includes(customEvField)?baseFB+','+customEvField:baseFB)
+        :'date,account_id,customer_id,campaign,ad_group_name,ad_name,spend,impressions,clicks,ctr,cpc,conversions,cost_per_conversion';
+      const url=`https://connectors.windsor.ai/${plat}?api_key=${windsorKey}&date_from=${from}&date_to=${to}&fields=${fields}&accounts=${accounts.join(',')}`;
+      const res=await fetch(url);
+      if(!res.ok){const t=await res.text().catch(()=>'');throw new Error(`HTTP ${res.status}: ${t.slice(0,200)}`);}
+      const json=await res.json();
+      const rawRows=json.result||json.data||(Array.isArray(json)?json:[]);
+      if(!Array.isArray(rawRows))return[];
+      windsorCacheSet(plat,accounts,from,to,rawRows);
+      return rawRows;
+    };
+
     const fetch_=async()=>{
       setLoading(true);
-      // NÃO limpa rawData imediatamente — mantém dados antigos enquanto carrega
       const nd={};
-      let allFromCache=true;
       for(const plat of platforms){
         const allAccounts=activeClient?.accounts?.[plat]||[];
         const selIds=plat==='facebook'?selectedMetaIds:selectedGoogleIds;
-        // null=todas; []= nenhuma; [id,...]= contas específicas
         const accounts=selIds===null?allAccounts:selIds.filter(id=>allAccounts.includes(id));
         if(!windsorKey){nd[plat]=genDemo(plat,days);continue;}
         if(!accounts.length){nd[plat]=[];continue;}
 
-        // ── CACHE CHECK ──
-        const cached=windsorCacheGet(plat,accounts,dateFrom,dateTo);
-        if(cached){
-          nd[plat]=cached;
-          console.log(`Windsor ${plat}: ${cached.length} rows (CACHE HIT ⚡)`);
-          continue;
-        }
-        allFromCache=false;
+        const customEvField=activeClient?.customEventField||'';
+        let combined=[];
 
         try{
-          // Adiciona account_id ao request para permitir filtro no cliente
-          const customEvField=activeClient?.customEventField||'';
-          const baseFB='date,account_id,campaign_name,adset_name,ad_name,spend,impressions,clicks,ctr,cpm,cpc,frequency,reach,actions_purchase,action_values_purchase,actions_add_to_cart,actions_initiate_checkout,actions_onsite_conversion_messaging_conversation_started_7d,actions_lead,objective';
-          const fields=plat==='facebook'
-            ?(customEvField&&activeClient?.objective==='custom'&&!baseFB.includes(customEvField)?baseFB+','+customEvField:baseFB)
-            :'date,account_id,customer_id,campaign,ad_group_name,ad_name,spend,impressions,clicks,ctr,cpc,conversions,cost_per_conversion';
-          const url=`https://connectors.windsor.ai/${plat}?api_key=${windsorKey}&date_from=${dateFrom}&date_to=${dateTo}&fields=${fields}&accounts=${accounts.join(',')}`;
-          const res=await fetch(url);
-          if(!res.ok){const errText=await res.text().catch(()=>'');throw new Error(`HTTP ${res.status}: ${errText.slice(0,200)}`);}
-          const json=await res.json();
-          const rawRows=json.result||json.data||(Array.isArray(json)?json:[]);
-          if(!Array.isArray(rawRows)||rawRows.length===0){
-            console.warn(`Windsor ${plat}: resposta vazia`);
-            nd[plat]=[];
-            continue;
+          // ── 1. HISTÓRICO: Supabase (se existe dado) ──
+          if(historicalTo&&dateFrom<=historicalTo){
+            const sbRows=await queryAdData(plat,accounts,dateFrom,historicalTo);
+            if(sbRows&&sbRows.length>0){
+              console.log(`Supabase ${plat} ${dateFrom}→${historicalTo}: ${sbRows.length} rows 🗄️`);
+              combined=combined.concat(normalizeRows(sbRows,plat,selIds,customEvField));
+            } else if(sbRows===null||sbRows?.length===0){
+              // Sem dados no Supabase → fallback Windsor para período histórico
+              console.log(`Supabase ${plat}: sem dados → Windsor fallback`);
+              const raw=await fetchWindsor(plat,accounts,dateFrom,historicalTo,customEvField);
+              combined=combined.concat(normalizeRows(raw,plat,selIds,customEvField));
+            }
           }
-          let rows=rawRows.map(r=>({
-            ...r,
-            campaign_name: r.campaign_name||r.campaign||'',
-            adset_name: r.adset_name||r.ad_group_name||'',
-            reach: r.reach||Math.floor((r.impressions||0)*0.82),
-            frequency: r.frequency||(r.reach?(r.impressions||0)/r.reach:1),
-            purchases: r.actions_purchase||r.conversions||0,
-            purchase_value: r.action_values_purchase||0,
-            add_to_cart: r.actions_add_to_cart||0,
-            initiate_checkout: r.actions_initiate_checkout||0,
-            messaging_conversations: r.actions_onsite_conversion_messaging_conversation_started_7d||0,
-            lead: r.actions_lead||0,
-            custom_event: (customEvField?r[customEvField]:null)??r.custom_event??0
-          }));
-          // Filtro no cliente — garante que só mostra as contas selecionadas
-          // Normaliza prefixo act_ (Meta retorna act_123 mas armazenamos 123)
-          if(selIds!==null&&selIds.length>0){
-            const normSel=selIds.map(id=>String(id).replace(/^act_/,'').trim());
-            rows=rows.filter(r=>{
-              const rid=String(r.account_id||r.customer_id||'').replace(/^act_/,'').trim();
-              if(!rid||rid==='null'||rid==='0'||rid==='undefined')return true;
-              return normSel.includes(rid);
-            });
+          // ── 2. RECENTE: Windsor sempre (dados frescos) ──
+          if(dateTo>=recentFrom){
+            const raw=await fetchWindsor(plat,accounts,recentFrom,dateTo,customEvField);
+            const recentRows=normalizeRows(raw,plat,selIds,customEvField);
+            console.log(`Windsor ${plat} ${recentFrom}→${dateTo}: ${recentRows.length} rows 🌐`);
+            combined=combined.concat(recentRows);
           }
-          // ── SALVA NO CACHE ──
-          windsorCacheSet(plat,accounts,dateFrom,dateTo,rows);
-          nd[plat]=rows;
-          console.log(`Windsor ${plat}: ${rows.length} rows (contas: ${selIds===null?'todas':selIds.join(',')}) → salvo no cache`);
+          // Remove duplicatas por date+account+campaign (histórico e recente podem se sobrepor no cutoff)
+          const seen=new Set();
+          nd[plat]=combined.filter(r=>{
+            const k=`${r.date}|${r.account_id}|${r.campaign_name}|${r.adset_name}`;
+            if(seen.has(k))return false;seen.add(k);return true;
+          });
         }catch(e){
-          console.error(`Windsor ${plat} erro:`,e.message);
+          console.error(`Fetch ${plat}:`,e.message);
           nd[plat]=genDemo(plat,days);
           nd[`_err_${plat}`]=e.message;
         }
@@ -3285,7 +3586,7 @@ const App=({user:initUser,onLogout})=>{
       case'cerebro':return<CerebroPage allData={allData} anthropicKey={anthropicKey} objConfig={objConfig} dateFrom={dateFrom} dateTo={dateTo}/>;
       case'usuarios':return<UsuariosPage user={user}/>;
       case'clientes':return<ClientesPage clients={clients} onSave={saveClients} windsorKey={windsorKey}/>;
-      case'configuracoes':return<ConfiguracoesPage user={user} onUpdateUser={updateUser} onLogout={onLogout}/>;
+      case'configuracoes':return<ConfiguracoesPage user={user} onUpdateUser={updateUser} onLogout={onLogout} clients={clients}/>;
       default:return<DashboardPage allData={allData} platforms={platforms} objConfig={objConfig} compareAllData={compareAllData} compareMode={compareMode}/>;
     }
   };
@@ -3409,25 +3710,34 @@ const App=({user:initUser,onLogout})=>{
 const Root=()=>{
   const [authState,setAuthState]=useState({screen:'loading',user:null});
 
+  // Inicializa usuário: lê user_metadata, depois sobrescreve com viewer_access (para viewers)
+  const initUser=async(session)=>{
+    const localData=getUserLocal(session.user.id);
+    let u=buildUser(session.user,localData,session.access_token);
+    // Para viewers: busca permissões atualizadas no banco (ignora metadata possivelmente obsoleto)
+    if(u.role==='viewer'){
+      const access=await fetchViewerAccess(session.user.email);
+      if(access)u=applyViewerAccess(u,access);
+    }
+    upsertProfile(u);
+    return u;
+  };
+
   useEffect(()=>{
-    sb.auth.getSession().then(({data:{session}})=>{
+    sb.auth.getSession().then(async({data:{session}})=>{
       if(session){
-        const localData=getUserLocal(session.user.id);
-        const u=buildUser(session.user,localData,session.access_token);
-        upsertProfile(u);
+        const u=await initUser(session);
         setAuthState({screen:'app',user:u});
       } else {
         setAuthState({screen:'login',user:null});
       }
     });
-    const {data:{subscription}}=sb.auth.onAuthStateChange((event,session)=>{
+    const {data:{subscription}}=sb.auth.onAuthStateChange(async(event,session)=>{
       if(event==='SIGNED_OUT')setAuthState({screen:'login',user:null});
       if(event==='PASSWORD_RECOVERY')setAuthState({screen:'reset',user:null});
       if(event==='SIGNED_IN'&&session){
-        // Magic link / OTP login
-        const localData=getUserLocal(session.user.id);
-        const u=buildUser(session.user,localData,session.access_token);
-        upsertProfile(u);
+        // Magic link / OTP login — aplica viewer_access se viewer
+        const u=await initUser(session);
         setAuthState({screen:'app',user:u});
       }
       if(event==='TOKEN_REFRESHED'&&session){
