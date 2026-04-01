@@ -330,12 +330,15 @@ const fetchViewerAccess=async(email)=>{
 // Mescla viewer_access com o usuário base (viewer_access tem prioridade sobre user_metadata)
 const applyViewerAccess=(baseUser,access)=>{
   if(!access)return baseUser;
+  // Para viewers: allowed_clients do banco tem prioridade absoluta sobre metadata.
+  // Se vazio, usa [] (viewers sem clientes configurados), NUNCA DEMO_CLIENTS.
+  const viewerClients=Array.isArray(access.allowed_clients)?access.allowed_clients:[];
   return{
     ...baseUser,
-    role:access.role||baseUser.role,
-    allowedMetaAccounts:access.allowed_meta_accounts?.length?access.allowed_meta_accounts:baseUser.allowedMetaAccounts,
-    allowedGoogleAccounts:access.allowed_google_accounts?.length?access.allowed_google_accounts:baseUser.allowedGoogleAccounts,
-    clients:access.allowed_clients?.length?access.allowed_clients:baseUser.clients,
+    role:'viewer',// forçar role=viewer para garantir (banco é fonte de verdade)
+    allowedMetaAccounts:access.allowed_meta_accounts?.length?access.allowed_meta_accounts:[],
+    allowedGoogleAccounts:access.allowed_google_accounts?.length?access.allowed_google_accounts:[],
+    clients:viewerClients,// pode ser [] se admin ainda não configurou — jamais DEMO_CLIENTS
     windsorKey:access.windsor_key||baseUser.windsorKey,
     makeWebhook:access.make_webhook||baseUser.makeWebhook,
   };
@@ -3322,6 +3325,8 @@ const App=({user:initUser,onLogout})=>{
   const [clients,setClients]=useState(()=>{
     const raw=user.clients||[];
     const migrated=raw.map(migrateClient).filter(Boolean);
+    // Viewers NUNCA devem ver DEMO_CLIENTS mesmo que migrated esteja vazio
+    if(user.role==='viewer')return migrated;
     return migrated.length?migrated:DEMO_CLIENTS;
   });
   const lockedClientId=useMemo(()=>new URLSearchParams(window.location.search).get('client'),[]);
@@ -3348,7 +3353,8 @@ const App=({user:initUser,onLogout})=>{
   // Viewer não pode acessar Gestão
   useEffect(()=>{if(user.role==='viewer'&&['clientes','configuracoes','usuarios'].includes(page))setPage('dashboard');},[user.role,page]);
 
-  const activeClient=clients.find(c=>c.id===activeClientId)||clients[0]||DEMO_CLIENTS[0];
+  // Viewers nunca devem ter DEMO_CLIENTS[0] como fallback (exibiria "Vade Focus")
+  const activeClient=clients.find(c=>c.id===activeClientId)||clients[0]||(user.role==='viewer'?null:DEMO_CLIENTS[0]);
   const windsorKey=user.windsorKey||'';
   const anthropicKey=user.anthropicKey||'';
   const makeWebhook=user.makeWebhook||DEFAULT_WEBHOOK;
@@ -3710,14 +3716,19 @@ const App=({user:initUser,onLogout})=>{
 const Root=()=>{
   const [authState,setAuthState]=useState({screen:'loading',user:null});
 
-  // Inicializa usuário: lê user_metadata, depois sobrescreve com viewer_access (para viewers)
+  // Inicializa usuário: lê user_metadata, depois SEMPRE verifica viewer_access no banco.
+  // ⚠️ CRÍTICO: NÃO usar u.role === 'viewer' como guarda aqui!
+  // Para usuários existentes no Supabase, user_metadata.role pode ser stale (admin/undefined)
+  // mesmo que tenham sido convidados como viewer — o OTP data só é gravado na criação.
+  // viewer_access é a fonte de verdade e deve sempre ser consultada.
   const initUser=async(session)=>{
     const localData=getUserLocal(session.user.id);
     let u=buildUser(session.user,localData,session.access_token);
-    // Para viewers: busca permissões atualizadas no banco (ignora metadata possivelmente obsoleto)
-    if(u.role==='viewer'){
-      const access=await fetchViewerAccess(session.user.email);
-      if(access)u=applyViewerAccess(u,access);
+    // SEMPRE busca viewer_access — ignora role do metadata que pode estar desatualizado
+    const access=await fetchViewerAccess(session.user.email);
+    if(access&&access.role==='viewer'){
+      // Só aplica se o banco diz que é viewer (protege admins de serem rebaixados acidentalmente)
+      u=applyViewerAccess(u,access);
     }
     upsertProfile(u);
     return u;
