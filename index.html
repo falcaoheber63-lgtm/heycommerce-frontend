@@ -3735,15 +3735,20 @@ const Root=()=>{
   };
 
   useEffect(()=>{
-    sb.auth.getSession().then(async({data:{session}})=>{
-      if(session){
-        const u=await initUser(session);
-        setAuthState({screen:'app',user:u});
-      } else {
-        setAuthState({screen:'login',user:null});
-      }
-    });
+    // NOTA: Não usar sb.auth.getSession() aqui — versões novas do supabase-js (v2.46+)
+    // usam Navigator Locks e chamar getSession() + onAuthStateChange juntos causa deadlock.
+    // onAuthStateChange dispara INITIAL_SESSION imediatamente com a sessão atual (equivalente
+    // ao antigo getSession), sendo o padrão recomendado para supabase-js v2 moderno.
     const {data:{subscription}}=sb.auth.onAuthStateChange(async(event,session)=>{
+      if(event==='INITIAL_SESSION'){
+        // Dispara ao montar: session presente = usuário logado, null = não logado
+        if(session){
+          const u=await initUser(session);
+          setAuthState({screen:'app',user:u});
+        } else {
+          setAuthState({screen:'login',user:null});
+        }
+      }
       if(event==='SIGNED_OUT')setAuthState({screen:'login',user:null});
       if(event==='PASSWORD_RECOVERY')setAuthState({screen:'reset',user:null});
       if(event==='SIGNED_IN'&&session){
