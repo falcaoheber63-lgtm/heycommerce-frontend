@@ -893,7 +893,7 @@ const OnboardingPage=({onDone})=>{
 };
 
 // ── DASHBOARD PAGE ──
-const DashboardPage=({allData,platforms,objConfig={},compareAllData=[],compareMode=null})=>{
+const DashboardPage=({allData,platforms,objConfig={},compareAllData=[],compareMode=null,isRefreshing=false})=>{
   const [dashTab,setDashTab]=useState('overview');
   const [campFilter,setCampFilter]=useState([]);
   const [showCampPicker,setShowCampPicker]=useState(false);
@@ -902,11 +902,30 @@ const DashboardPage=({allData,platforms,objConfig={},compareAllData=[],compareMo
   const [campSort,setCampSort]=useState({col:'spend',dir:'desc'});
   const [adsetSort,setAdsetSort]=useState({col:'spend',dir:'desc'});
   const [crSort,setCrSort]=useState({col:'spend',dir:'desc'});
+  const [campType,setCampType]=useState('all');
   const obj=objConfig;
 
+  // Classifica campanha por tipo usando objective ou nome
+  const classifyCampType=useCallback((r)=>{
+    const obj_val=(r.objective||'').toUpperCase();
+    const name=(r.campaign_name||'').toLowerCase();
+    if(obj_val.includes('SALES')||obj_val.includes('CONVERSIONS')||name.match(/vend|compra|sales|conv|roas|purchase/))return'vendas';
+    if(obj_val.includes('MESSAGES')||obj_val==='OUTCOME_ENGAGEMENT'||name.match(/mens|whats|msg|mensa|message|conversa/))return'mensagens';
+    if(obj_val.includes('AWARENESS')||obj_val.includes('REACH')||obj_val.includes('BRAND')||name.match(/topo|awareness|alcance|brand|visib/))return'topo';
+    return'other';
+  },[]);
+
   const allCamps=useMemo(()=>aggBy(allData,'campaign_name'),[allData]);
-  const filteredData=useMemo(()=>campFilter.length>0?allData.filter(r=>campFilter.includes(r.campaign_name)):allData,[allData,campFilter]);
-  const filteredCmp=useMemo(()=>campFilter.length>0?compareAllData.filter(r=>campFilter.includes(r.campaign_name)):compareAllData,[compareAllData,campFilter]);
+  const filteredData=useMemo(()=>{
+    let d=campFilter.length>0?allData.filter(r=>campFilter.includes(r.campaign_name)):allData;
+    if(campType!=='all')d=d.filter(r=>classifyCampType(r)===campType);
+    return d;
+  },[allData,campFilter,campType,classifyCampType]);
+  const filteredCmp=useMemo(()=>{
+    let d=campFilter.length>0?compareAllData.filter(r=>campFilter.includes(r.campaign_name)):compareAllData;
+    if(campType!=='all')d=d.filter(r=>classifyCampType(r)===campType);
+    return d;
+  },[compareAllData,campFilter,campType,classifyCampType]);
   const camps=useMemo(()=>aggBy(filteredData,'campaign_name'),[filteredData]);
   const adsets=useMemo(()=>aggBy(filteredData,'adset_name'),[filteredData]);
 
@@ -1095,6 +1114,7 @@ const DashboardPage=({allData,platforms,objConfig={},compareAllData=[],compareMo
   // Shared campaign filter bar
   const FilterBar=()=><>
     <div style={{marginBottom:'10px',display:'flex',alignItems:'center',gap:'8px',flexWrap:'wrap'}}>
+      {isRefreshing&&<span style={{fontSize:'11px',color:'#818cf8',padding:'3px 8px',background:'rgba(99,102,241,.12)',borderRadius:'10px',border:'1px solid rgba(99,102,241,.3)',animation:'pulse 1.5s infinite'}}>⏳ Atualizando…</span>}
       <button className={`btn btn-sm ${showCampPicker?'btn-primary':'btn-secondary'}`} onClick={()=>setShowCampPicker(p=>!p)}>
         {campFilter.length>0?`📊 ${campFilter.length} campanha(s)`:'📊 Filtrar campanhas'} {showCampPicker?'▲':'▼'}
       </button>
@@ -1103,7 +1123,13 @@ const DashboardPage=({allData,platforms,objConfig={},compareAllData=[],compareMo
         title="Oculta campanhas/conjuntos/criativos sem gasto no período">
         {activeOnly?'🟢 Só com gasto':'🟢 Só ativas'}
       </button>
-      <span style={{fontSize:'11px',color:'#4b5563'}}>{obj.icon} {obj.label}</span>
+      {/* Filtro tipo de campanha */}
+      {[{k:'all',l:'Todos'},{k:'vendas',l:'💰 Vendas'},{k:'mensagens',l:'💬 Mensagens'},{k:'topo',l:'📢 Topo'}].map(t=>(
+        <button key={t.k} className={`btn btn-sm ${campType===t.k?'btn-primary':'btn-secondary'}`}
+          onClick={()=>setCampType(t.k)} title="Filtrar por tipo de campanha">
+          {t.l}
+        </button>
+      ))}
       {hasCmp&&<span style={{fontSize:'11px',padding:'2px 8px',background:'rgba(99,102,241,.15)',color:'#818cf8',borderRadius:'10px',border:'1px solid rgba(99,102,241,.3)'}}>📊 Comparando períodos — Δ% ao lado de cada métrica</span>}
     </div>
     {showCampPicker&&<div style={{background:'#111827',border:'1px solid #1f2937',borderRadius:'8px',padding:'10px',marginBottom:'10px',maxHeight:'200px',overflowY:'auto',display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(260px,1fr))',gap:'4px'}}>
@@ -2351,10 +2377,9 @@ const ClientesPage=({clients,onSave,windsorKey})=>{
               {discoverErr&&<div style={{fontSize:'11px',color:'#f87171',marginBottom:'8px',padding:'5px 8px',background:'rgba(239,68,68,.08)',borderRadius:'4px'}}>{discoverErr}</div>}
               {/* Objetivo */}
               <div className="form-group">
-                <label className="form-label">🎯 Objetivo da Conta</label>
+                <label className="form-label">📘 Objetivo Principal — Meta Ads</label>
                 <select className="form-input" value={editForm.objective||'ecommerce'} onChange={e=>setEditForm({...editForm,objective:e.target.value})}>
                   <option value="ecommerce">🛒 E-commerce (Compras / ROAS)</option>
-                  <option value="lead">📋 Lead / Formulário (Leads / Custo/Lead)</option>
                   <option value="message">💬 Mensagem (Conversas / Custo/Conversa)</option>
                   <option value="custom">⚡ Evento Personalizado</option>
                 </select>
@@ -2442,7 +2467,7 @@ const ClientesPage=({clients,onSave,windsorKey})=>{
 };
 
 // ── INVITE USER CARD ──
-const InviteUserCard=({user,onInvited})=>{
+const InviteUserCard=({user,onInvited,existingEmails=[]})=>{
   const [email,setEmail]=useState('');
   const [name,setName]=useState('');
   const [selClientId,setSelClientId]=useState(user.clients[0]?.id||'');
@@ -2451,6 +2476,7 @@ const InviteUserCard=({user,onInvited})=>{
   const [loading,setLoading]=useState(false);
   const [msg,setMsg]=useState('');
   const [err,setErr]=useState('');
+  const [inviteRole,setInviteRole]=useState('viewer');
 
   const selClient=user.clients.find(c=>c.id===selClientId)||user.clients[0];
   const avMeta=selClient?.accounts?.facebook||[];
@@ -2465,10 +2491,16 @@ const InviteUserCard=({user,onInvited})=>{
   const sendInvite=async()=>{
     setMsg('');setErr('');
     if(!email){setErr('Insira o e-mail do convidado.');return;}
+    // Verifica se já é usuário ativo
+    if(existingEmails.includes(email.toLowerCase().trim())){
+      setErr(`⚠️ ${email} já é um usuário ativo na plataforma.`);return;
+    }
     setLoading(true);
     try{
       const metaShare=allowedMeta.length>0?allowedMeta:avMeta;
       const googleShare=allowedGoogle.length>0?allowedGoogle:avGoogle;
+      // Admin convidado herda todas as configs; viewer recebe apenas as selecionadas
+      const isAdminInvite=inviteRole==='admin';
       const viewerClient=selClient?[{...selClient,accounts:{facebook:metaShare,google_ads:googleShare,facebookNames:selClient.accounts?.facebookNames||{},googleNames:selClient.accounts?.googleNames||{}}}]:[];
       const {error}=await sb.auth.signInWithOtp({
         email,
@@ -2476,12 +2508,12 @@ const InviteUserCard=({user,onInvited})=>{
           shouldCreateUser:true,
           data:{
             name:name||email,
-            role:'viewer',
+            role:inviteRole,
             windsorKey:user.windsorKey||'',
             makeWebhook:user.makeWebhook||'',
-            allowedClients:viewerClient,
-            allowedMetaAccounts:metaShare,
-            allowedGoogleAccounts:googleShare
+            allowedClients:isAdminInvite?user.clients:viewerClient,
+            allowedMetaAccounts:isAdminInvite?[]:metaShare,
+            allowedGoogleAccounts:isAdminInvite?[]:googleShare
           },
           emailRedirectTo:window.location.origin+window.location.pathname
         }
@@ -2490,12 +2522,12 @@ const InviteUserCard=({user,onInvited})=>{
       // Salva na lista local do admin
       const invKey=`hc_${user.id}_invited`;
       const existing=JSON.parse(localStorage.getItem(invKey)||'[]');
-      const newInv={email,name:name||email,role:'viewer',allowedMetaAccounts:metaShare,allowedGoogleAccounts:googleShare,clientName:selClient?.name||'',invitedAt:new Date().toISOString()};
+      const newInv={email,name:name||email,role:inviteRole,allowedMetaAccounts:metaShare,allowedGoogleAccounts:googleShare,clientName:selClient?.name||'',invitedAt:new Date().toISOString()};
       const updated=[...existing.filter(u=>u.email!==email),newInv];
       localStorage.setItem(invKey,JSON.stringify(updated));
       if(onInvited)onInvited(newInv);
-      setMsg(`✓ Convite enviado para ${email}! O link de acesso chegará no e-mail.`);
-      setEmail('');setName('');setAllowedMeta([]);setAllowedGoogle([]);
+      setMsg(`✓ Convite enviado para ${email}!`);
+      setEmail('');setName('');setAllowedMeta([]);setAllowedGoogle([]);setInviteRole('viewer');
     }catch(e){setErr('Erro ao enviar convite: '+e.message);}
     setLoading(false);
   };
@@ -2503,7 +2535,7 @@ const InviteUserCard=({user,onInvited})=>{
   return(
     <div className="card">
       <h3 style={{marginTop:0}}>✉️ Convidar Usuário</h3>
-      <div style={{fontSize:'12px',color:'#6b7280',marginBottom:'12px'}}>O usuário convidado terá acesso somente leitura. Você define quais contas ele pode ver.</div>
+      <div style={{fontSize:'12px',color:'#6b7280',marginBottom:'12px'}}>Envie um link de acesso por e-mail. Admins têm acesso completo; Básico visualiza apenas as contas selecionadas.</div>
       {err&&<div style={{background:'rgba(239,68,68,.1)',border:'1px solid rgba(239,68,68,.3)',borderRadius:'6px',padding:'8px 12px',fontSize:'12px',color:'#f87171',marginBottom:'10px'}}>{err}</div>}
       {msg&&<div style={{background:'rgba(16,185,129,.1)',border:'1px solid rgba(16,185,129,.3)',borderRadius:'6px',padding:'8px 12px',fontSize:'12px',color:'#34d399',marginBottom:'10px'}}>{msg}</div>}
       <div className="form-group">
@@ -2513,6 +2545,20 @@ const InviteUserCard=({user,onInvited})=>{
       <div className="form-group">
         <label className="form-label">Nome (opcional)</label>
         <input className="form-input" type="text" value={name} onChange={e=>setName(e.target.value)} placeholder="Nome completo"/>
+      </div>
+      <div className="form-group">
+        <label className="form-label">Nível de acesso</label>
+        <div style={{display:'flex',gap:'10px',marginTop:'4px'}}>
+          {[{v:'viewer',l:'👁 Acesso Básico',desc:'Visualiza contas selecionadas'},{v:'admin',l:'⚙️ Admin',desc:'Acesso completo à plataforma'}].map(opt=>(
+            <label key={opt.v} style={{flex:1,display:'flex',alignItems:'center',gap:'8px',cursor:'pointer',background:inviteRole===opt.v?'rgba(99,102,241,0.15)':'rgba(255,255,255,0.03)',border:`1px solid ${inviteRole===opt.v?'#6366f1':'#374151'}`,borderRadius:'8px',padding:'10px 12px',transition:'all .15s'}}>
+              <input type="radio" name="inviteRole" value={opt.v} checked={inviteRole===opt.v} onChange={()=>setInviteRole(opt.v)} style={{accentColor:'#6366f1'}}/>
+              <span>
+                <div style={{fontWeight:600,fontSize:'13px',color:'#e5e7eb'}}>{opt.l}</div>
+                <div style={{fontSize:'11px',color:'#6b7280'}}>{opt.desc}</div>
+              </span>
+            </label>
+          ))}
+        </div>
       </div>
       {user.clients.length>0&&(
         <div className="form-group">
@@ -2613,6 +2659,20 @@ const UsuariosPage=({user})=>{
   const togEditMeta=(id)=>setEditForm(f=>({...f,allowed_meta:f.allowed_meta.includes(id)?f.allowed_meta.filter(x=>x!==id):[...f.allowed_meta,id]}));
   const togEditGoogle=(id)=>setEditForm(f=>({...f,allowed_google:f.allowed_google.includes(id)?f.allowed_google.filter(x=>x!==id):[...f.allowed_google,id]}));
 
+  const removeProfile=async(profileId,profileEmail)=>{
+    if(!window.confirm(`Remover ${profileEmail} da lista de usuários? O acesso será revogado no próximo login.`))return;
+    const {error}=await sb.from('profiles').delete().eq('id',profileId);
+    if(error){alert('Erro ao remover: '+error.message);return;}
+    setProfiles(ps=>ps.filter(p=>p.id!==profileId));
+  };
+
+  const toggleRole=async(p)=>{
+    const newRole=p.role==='admin'?'viewer':'admin';
+    const {error}=await sb.from('profiles').update({role:newRole}).eq('id',p.id);
+    if(error){alert('Erro: '+error.message);return;}
+    setProfiles(ps=>ps.map(x=>x.id===p.id?{...x,role:newRole}:x));
+  };
+
   const saveEdit=async()=>{
     setEditMsg('salvando…');
     if(editingId){
@@ -2634,11 +2694,16 @@ const UsuariosPage=({user})=>{
   };
 
   const resendInvite=async(inv)=>{
+    // Verifica se já é usuário ativo
+    if(activeEmails.has(inv.email)){
+      alert(`⚠️ ${inv.email} já é um usuário ativo! Não é necessário reenviar convite.`);
+      return;
+    }
     const {error}=await sb.auth.signInWithOtp({
       email:inv.email,
       options:{
         shouldCreateUser:true,
-        data:{name:inv.name||inv.email,role:'viewer',windsorKey:user.windsorKey||'',makeWebhook:user.makeWebhook||'',allowedMetaAccounts:inv.allowedMetaAccounts||[],allowedGoogleAccounts:inv.allowedGoogleAccounts||[]},
+        data:{name:inv.name||inv.email,role:inv.role||'viewer',windsorKey:user.windsorKey||'',makeWebhook:user.makeWebhook||'',allowedMetaAccounts:inv.allowedMetaAccounts||[],allowedGoogleAccounts:inv.allowedGoogleAccounts||[]},
         emailRedirectTo:window.location.origin+window.location.pathname
       }
     });
@@ -2733,10 +2798,12 @@ const UsuariosPage=({user})=>{
                   {p.allowed_google_accounts?.filter(Boolean).length>0&&<div style={{fontSize:'11px',color:'#34d399',marginTop:'2px'}}>🟢 Google: {p.allowed_google_accounts.join(', ')}</div>}
                   <div style={{fontSize:'11px',color:'#4b5563',marginTop:'3px'}}>Último acesso: {lastLogin}</div>
                 </div>
-                <div style={{display:'flex',flexDirection:'column',alignItems:'flex-end',gap:'5px',minWidth:'90px'}}>
-                  <span className={`badge ${isViewer?'badge-gray':'badge-green'}`}>{isViewer?'👁 Acesso Básico':'⚙️ Admin'}</span>
+                <div style={{display:'flex',flexDirection:'column',alignItems:'flex-end',gap:'5px',minWidth:'110px'}}>
+                  <span className={`badge ${isViewer?'badge-gray':'badge-green'}`}>{isViewer?'👁 Básico':'⚙️ Admin'}</span>
                   <span style={{fontSize:'10px',color:'#34d399',fontWeight:600}}>● Ativo</span>
                   {p.id!==user.id&&<button className="btn btn-secondary" style={{fontSize:'11px',padding:'3px 8px'}} onClick={()=>isEditing?setEditingId(null):startEdit(p)}>{isEditing?'✕ Fechar':'✏️ Editar'}</button>}
+                  {p.id!==user.id&&<button className="btn btn-secondary" style={{fontSize:'11px',padding:'3px 8px'}} onClick={()=>toggleRole(p)} title={isViewer?'Promover para Admin':'Rebaixar para Básico'}>{isViewer?'⬆️ Admin':'⬇️ Básico'}</button>}
+                  {p.id!==user.id&&<button className="btn btn-danger" style={{fontSize:'11px',padding:'3px 8px'}} onClick={()=>removeProfile(p.id,p.email)}>✕ Remover</button>}
                 </div>
               </div>
               {isEditing&&<EditPanel onCancel={()=>setEditingId(null)}/>}
@@ -2762,7 +2829,7 @@ const UsuariosPage=({user})=>{
                     {inv.allowedGoogleAccounts?.length>0&&<div style={{fontSize:'11px',color:'#34d399',marginTop:'2px'}}>🟢 Google: {inv.allowedGoogleAccounts.join(', ')}</div>}
                   </div>
                   <div style={{display:'flex',flexDirection:'column',alignItems:'flex-end',gap:'5px',minWidth:'90px'}}>
-                    <span className="badge badge-gray">👁 Acesso Básico</span>
+                    <span className={`badge ${inv.role==='admin'?'badge-green':'badge-gray'}`}>{inv.role==='admin'?'⚙️ Admin':'👁 Básico'}</span>
                     <span style={{fontSize:'10px',color:'#f59e0b',fontWeight:600}}>● Convidado</span>
                     <button className="btn btn-secondary" style={{fontSize:'11px',padding:'3px 8px'}} onClick={()=>isEditingP?setEditingPendingEmail(null):startEditPending(inv)}>{isEditingP?'✕ Fechar':'✏️ Editar'}</button>
                     <button className="btn btn-secondary" style={{fontSize:'11px',padding:'3px 8px'}} onClick={()=>resendInvite(inv)}>↻ Reenviar</button>
@@ -2776,7 +2843,7 @@ const UsuariosPage=({user})=>{
         </div>
       )}
 
-      <InviteUserCard user={user} onInvited={(inv)=>{
+      <InviteUserCard user={user} existingEmails={allProfiles.map(p=>p.email?.toLowerCase())} onInvited={(inv)=>{
         const updated=[...pending.filter(p=>p.email!==inv.email),inv];
         setPending(updated);
         localStorage.setItem(invKey,JSON.stringify(updated));
@@ -2793,10 +2860,15 @@ const ConfiguracoesPage=({user,onUpdateUser,onLogout})=>{
   const [discovering,setDiscovering]=useState(false);
   const [discovered,setDiscovered]=useState([]);
 
-  const save=()=>{
+  const save=async()=>{
     const localData=getUserLocal(user.id)||{};
     saveUserLocal(user.id,{...localData,...form});
-    onUpdateUser({...user,...form});setMsg('Configurações salvas!');
+    onUpdateUser({...user,...form});
+    // Atualiza nome no banco de dados profiles
+    if(form.name&&form.name!==user.name){
+      await sb.from('profiles').update({name:form.name}).eq('id',user.id).catch(()=>{});
+    }
+    setMsg('Configurações salvas!');
     setTimeout(()=>setMsg(''),3000);
   };
 
@@ -2918,10 +2990,9 @@ const SidebarAccountSelector=({label,icon,color,rgb,ids,names,selected,onChange}
       {/* Header */}
       <div style={{fontSize:'10px',color:'#4b5563',marginBottom:'5px',textTransform:'uppercase',letterSpacing:'0.06em',display:'flex',alignItems:'center',justifyContent:'space-between',padding:'0 2px'}}>
         <span style={{fontWeight:'700'}}>{icon} {label}</span>
-        <div style={{display:'flex',gap:'6px'}}>
-          <button style={{background:'none',border:'none',color:`rgb(${rgb})`,fontSize:'10px',cursor:'pointer',padding:0,fontWeight:'600'}} onClick={selectAll}>Todas</button>
-          <span style={{color:'#374151'}}>·</span>
-          <button style={{background:'none',border:'none',color:'#ef4444',fontSize:'10px',cursor:'pointer',padding:0,fontWeight:'600'}} onClick={deselectAll}>Nenhuma</button>
+        <div style={{display:'flex',gap:'4px'}}>
+          <button style={{background:allSelected?`rgba(${rgb},.18)`:'rgba(255,255,255,.05)',border:`1px solid ${allSelected?`rgb(${rgb})`:'#374151'}`,color:allSelected?`rgb(${rgb})`:'#9ca3af',fontSize:'10px',cursor:'pointer',padding:'2px 7px',borderRadius:'4px',fontWeight:'600',transition:'all .15s'}} onClick={selectAll}>✓ Todas</button>
+          <button style={{background:noneSelected?'rgba(239,68,68,.18)':'rgba(255,255,255,.05)',border:`1px solid ${noneSelected?'#ef4444':'#374151'}`,color:noneSelected?'#ef4444':'#9ca3af',fontSize:'10px',cursor:'pointer',padding:'2px 7px',borderRadius:'4px',fontWeight:'600',transition:'all .15s'}} onClick={deselectAll}>✕ Nenhuma</button>
         </div>
       </div>
       {/* Search */}
@@ -3090,7 +3161,7 @@ const App=({user:initUser,onLogout})=>{
         try{
           // Adiciona account_id ao request para permitir filtro no cliente
           const customEvField=activeClient?.customEventField||'';
-          const baseFB='date,account_id,campaign_name,adset_name,ad_name,spend,impressions,clicks,ctr,cpm,cpc,frequency,reach,actions_purchase,action_values_purchase,actions_add_to_cart,actions_initiate_checkout,actions_onsite_conversion_messaging_conversation_started_7d,actions_lead';
+          const baseFB='date,account_id,campaign_name,adset_name,ad_name,spend,impressions,clicks,ctr,cpm,cpc,frequency,reach,actions_purchase,action_values_purchase,actions_add_to_cart,actions_initiate_checkout,actions_onsite_conversion_messaging_conversation_started_7d,actions_lead,objective';
           const fields=plat==='facebook'
             ?(customEvField&&activeClient?.objective==='custom'&&!baseFB.includes(customEvField)?baseFB+','+customEvField:baseFB)
             :'date,account_id,customer_id,campaign,ad_group_name,ad_name,spend,impressions,clicks,ctr,cpc,conversions,cost_per_conversion';
@@ -3172,7 +3243,7 @@ const App=({user:initUser,onLogout})=>{
         if(!accounts.length){nd[plat]=[];continue;}
         try{
           const customEvField=activeClient?.customEventField||'';
-          const baseFB='date,account_id,campaign_name,adset_name,ad_name,spend,impressions,clicks,ctr,cpm,cpc,frequency,reach,actions_purchase,action_values_purchase,actions_add_to_cart,actions_initiate_checkout,actions_onsite_conversion_messaging_conversation_started_7d,actions_lead';
+          const baseFB='date,account_id,campaign_name,adset_name,ad_name,spend,impressions,clicks,ctr,cpm,cpc,frequency,reach,actions_purchase,action_values_purchase,actions_add_to_cart,actions_initiate_checkout,actions_onsite_conversion_messaging_conversation_started_7d,actions_lead,objective';
           const fields=plat==='facebook'?(customEvField&&activeClient?.objective==='custom'&&!baseFB.includes(customEvField)?baseFB+','+customEvField:baseFB):'date,account_id,customer_id,campaign,ad_group_name,ad_name,spend,impressions,clicks,ctr,cpc,conversions,cost_per_conversion';
           const url=`https://connectors.windsor.ai/${plat}?api_key=${windsorKey}&date_from=${compareRange.from}&date_to=${compareRange.to}&fields=${fields}&accounts=${accounts.join(',')}`;
           const res=await fetch(url);
@@ -3204,10 +3275,12 @@ const App=({user:initUser,onLogout})=>{
 
   const TITLES={dashboard:'Dashboard',insights_campanhas:'Insights de Campanhas',cerebro:'Cérebro Gestor',usuarios:'Usuários',clientes:'Clientes',configuracoes:'Configurações'};
 
+  // Só mostra spinner de tela cheia na primeira carga (rawData vazio)
+  const isFirstLoad=loading&&!Object.values(rawData).some(v=>v?.length>0);
   const renderPage=()=>{
-    if(loading)return<div style={{textAlign:'center',padding:'60px',color:'#6b7280'}}><div className="loading-pulse" style={{fontSize:'32px'}}>⏳</div><div style={{marginTop:'12px',fontSize:'14px'}}>Carregando{windsorKey?' dados Windsor':' demonstração'}…</div><div style={{marginTop:'6px',fontSize:'11px',color:'#4b5563'}}>Verificando cache local primeiro…</div></div>;
+    if(isFirstLoad)return<div style={{textAlign:'center',padding:'60px',color:'#6b7280'}}><div className="loading-pulse" style={{fontSize:'32px'}}>⏳</div><div style={{marginTop:'12px',fontSize:'14px'}}>Carregando{windsorKey?' dados Windsor':' demonstração'}…</div><div style={{marginTop:'6px',fontSize:'11px',color:'#4b5563'}}>Verificando cache local primeiro…</div></div>;
     switch(page){
-      case'dashboard':return<DashboardPage allData={allData} platforms={platforms} objConfig={objConfig} compareAllData={compareAllData} compareMode={compareMode}/>;
+      case'dashboard':return<DashboardPage allData={allData} platforms={platforms} objConfig={objConfig} compareAllData={compareAllData} compareMode={compareMode} isRefreshing={loading}/>;
       case'insights_campanhas':return<InsightsCampanhasPage allData={allData} dateFrom={dateFrom} dateTo={dateTo} objConfig={objConfig}/>;
       case'cerebro':return<CerebroPage allData={allData} anthropicKey={anthropicKey} objConfig={objConfig} dateFrom={dateFrom} dateTo={dateTo}/>;
       case'usuarios':return<UsuariosPage user={user}/>;
