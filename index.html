@@ -134,7 +134,7 @@
 </head>
 <body>
 <div id="root"></div>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
@@ -318,12 +318,17 @@ const upsertViewerAccess=async(email,data)=>{
   }catch(e){console.warn('upsertViewerAccess error:',e.message);}
 };
 
-// Lê viewer_access pelo email — retorna null se não encontrado
-const fetchViewerAccess=async(email)=>{
+// Lê viewer_access pelo email — usa fetch direto (não SDK) para evitar Navigator Lock deadlock
+// quando chamado dentro do onAuthStateChange com supabase-js moderno
+const fetchViewerAccess=async(email,accessToken)=>{
   try{
-    const {data,error}=await sb.from('viewer_access').select('*').eq('email',email.toLowerCase().trim()).maybeSingle();
-    if(error)throw error;
-    return data;
+    const res=await fetch(
+      `${SUPABASE_URL}/rest/v1/viewer_access?email=eq.${encodeURIComponent(email.toLowerCase().trim())}&select=*&limit=1`,
+      {headers:{'apikey':SUPABASE_KEY,'Authorization':`Bearer ${accessToken}`,'Accept':'application/json'}}
+    );
+    if(!res.ok)return null;
+    const data=await res.json();
+    return Array.isArray(data)?(data[0]||null):null;
   }catch(e){console.warn('fetchViewerAccess error:',e.message);return null;}
 };
 
@@ -3722,46 +3727,48 @@ const Root=()=>{
   // mesmo que tenham sido convidados como viewer — o OTP data só é gravado na criação.
   // viewer_access é a fonte de verdade e deve sempre ser consultada.
   const initUser=async(session)=>{
+    const token=session.access_token;
     const localData=getUserLocal(session.user.id);
-    let u=buildUser(session.user,localData,session.access_token);
-    // SEMPRE busca viewer_access — ignora role do metadata que pode estar desatualizado
-    const access=await fetchViewerAccess(session.user.email);
+    let u=buildUser(session.user,localData,token);
+    // SEMPRE busca viewer_access com fetch direto (sem SDK) — evita Navigator Lock deadlock
+    // quando chamado de dentro do onAuthStateChange no supabase-js moderno
+    const access=await fetchViewerAccess(session.user.email,token);
     if(access&&access.role==='viewer'){
-      // Só aplica se o banco diz que é viewer (protege admins de serem rebaixados acidentalmente)
       u=applyViewerAccess(u,access);
     }
-    // Se o nome ainda é o email (localStorage limpo), tenta buscar do banco profiles
+    // Se o nome ainda é o email (localStorage limpo), busca do banco com fetch direto
     if(u.name===u.email){
       try{
-        const{data:prof}=await sb.from('profiles').select('name').eq('id',u.id).maybeSingle();
-        if(prof?.name&&prof.name!==u.email){
-          u={...u,name:prof.name};
-          // Restaura no localStorage para não buscar de novo na próxima vez
-          const ld=getUserLocal(u.id)||{};
-          saveUserLocal(u.id,{...ld,name:prof.name});
+        const res=await fetch(
+          `${SUPABASE_URL}/rest/v1/profiles?select=name&id=eq.${u.id}&limit=1`,
+          {headers:{'apikey':SUPABASE_KEY,'Authorization':`Bearer ${token}`}}
+        );
+        const rows=await res.json();
+        const n=rows?.[0]?.name;
+        if(n&&n!==u.email){
+          u={...u,name:n};
+          saveUserLocal(u.id,{...(getUserLocal(u.id)||{}),name:n});
         }
       }catch{}
     }
-    upsertProfile(u);
+    upsertProfile(u);// não é awaited — roda depois do lock ser liberado
     return u;
   };
 
   useEffect(()=>{
-    sb.auth.getSession().then(async({data:{session}})=>{
-      if(session){
-        const u=await initUser(session);
-        setAuthState({screen:'app',user:u});
-      } else {
-        setAuthState({screen:'login',user:null});
-      }
-    });
+    // NÃO usar sb.auth.getSession() — supabase-js moderno usa Navigator Locks e causa deadlock
+    // quando getSession() + queries Supabase são chamados juntos.
+    // onAuthStateChange dispara INITIAL_SESSION ao montar (equivalente ao getSession).
+    // fetchViewerAccess usa fetch direto (sem SDK) para evitar o lock dentro do callback.
     const {data:{subscription}}=sb.auth.onAuthStateChange(async(event,session)=>{
+      if(event==='INITIAL_SESSION'){
+        if(session){const u=await initUser(session);setAuthState({screen:'app',user:u});}
+        else{setAuthState({screen:'login',user:null});}
+      }
       if(event==='SIGNED_OUT')setAuthState({screen:'login',user:null});
       if(event==='PASSWORD_RECOVERY')setAuthState({screen:'reset',user:null});
       if(event==='SIGNED_IN'&&session){
-        // Magic link / OTP login — aplica viewer_access se viewer
-        const u=await initUser(session);
-        setAuthState({screen:'app',user:u});
+        const u=await initUser(session);setAuthState({screen:'app',user:u});
       }
       if(event==='TOKEN_REFRESHED'&&session){
         setAuthState(prev=>prev.screen==='app'?{...prev,user:{...prev.user,_token:session.access_token}}:prev);
