@@ -3590,7 +3590,10 @@ const App=({user:initUser,onLogout})=>{
   // Só mostra spinner de tela cheia na primeira carga (rawData vazio)
   const isFirstLoad=loading&&!Object.values(rawData).some(v=>v?.length>0);
   const renderPage=()=>{
-    if(isFirstLoad)return<div style={{textAlign:'center',padding:'60px',color:'#6b7280'}}><div className="loading-pulse" style={{fontSize:'32px'}}>⏳</div><div style={{marginTop:'12px',fontSize:'14px'}}>Carregando{windsorKey?' dados Windsor':' demonstração'}…</div><div style={{marginTop:'6px',fontSize:'11px',color:'#4b5563'}}>Verificando cache local primeiro…</div></div>;
+    // Só bloqueia com spinner nas páginas que realmente dependem de dados Windsor.
+    // Usuários, Clientes e Configurações carregam imediatamente, sem esperar Windsor.
+    const paginaComDados=['dashboard','insights_campanhas','cerebro'].includes(page);
+    if(isFirstLoad&&paginaComDados)return<div style={{textAlign:'center',padding:'60px',color:'#6b7280'}}><div className="loading-pulse" style={{fontSize:'32px'}}>⏳</div><div style={{marginTop:'12px',fontSize:'14px'}}>Carregando{windsorKey?' dados Windsor':' demonstração'}…</div><div style={{marginTop:'6px',fontSize:'11px',color:'#4b5563'}}>Verificando cache local primeiro…</div></div>;
     switch(page){
       case'dashboard':return<DashboardPage allData={allData} platforms={platforms} objConfig={objConfig} compareAllData={compareAllData} compareMode={compareMode} isRefreshing={loading}/>;
       case'insights_campanhas':return<InsightsCampanhasPage allData={allData} dateFrom={dateFrom} dateTo={dateTo} objConfig={objConfig}/>;
