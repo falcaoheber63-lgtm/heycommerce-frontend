@@ -3650,7 +3650,10 @@ const App=({user:initUser,onLogout})=>{
           </div>
         </div>
       ))}
-      {!sidebarCollapsed&&<div className="sidebar-bottom">👤 {user.name||user.email}</div>}
+      {!sidebarCollapsed&&<div className="sidebar-bottom" style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:'6px'}}>
+        <span style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>👤 {user.name||user.email}</span>
+        <button onClick={onLogout} title="Sair da conta" style={{background:'none',border:'1px solid #374151',color:'#9ca3af',cursor:'pointer',fontSize:'11px',padding:'2px 7px',borderRadius:'4px',flexShrink:0,lineHeight:'1.4'}} onMouseEnter={e=>e.target.style.color='#ef4444'} onMouseLeave={e=>e.target.style.color='#9ca3af'}>🚪</button>
+      </div>}
     </div>
     <div className="main-content">
       <div className="topbar">
@@ -3710,7 +3713,7 @@ const App=({user:initUser,onLogout})=>{
         </div>
       </div>
       <div className="page-content">
-        {!windsorKey&&isAdmin&&<div className="notice">⚠️ Exibindo dados de demonstração. <button style={{background:'none',border:'none',color:'#fb923c',cursor:'pointer',textDecoration:'underline',fontSize:'inherit'}} onClick={()=>setPage('configuracoes')}>Configure sua chave Windsor</button> para dados reais.</div>}
+        {!windsorKey&&<div className="notice">{isAdmin?<>⚠️ Exibindo dados de demonstração. <button style={{background:'none',border:'none',color:'#fb923c',cursor:'pointer',textDecoration:'underline',fontSize:'inherit'}} onClick={()=>setPage('configuracoes')}>Configure sua chave Windsor</button> para dados reais.</>:<>⚠️ Exibindo dados de demonstração. Contate o administrador para configurar sua chave Windsor.</>}</div>}
         {renderPage()}
       </div>
     </div>
